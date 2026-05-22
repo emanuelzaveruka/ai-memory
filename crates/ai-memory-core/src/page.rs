@@ -17,7 +17,7 @@ use crate::ids::{PageId, PagePath, ProjectId, WorkspaceId};
 ///
 /// Adopted from agentmemory's four-tier model, simplified. See
 /// [`docs/design-decisions.md`](../../docs/design-decisions.md) §7.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     /// Current session: last N observations, current files.

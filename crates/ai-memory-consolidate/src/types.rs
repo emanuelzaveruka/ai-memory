@@ -1,6 +1,6 @@
 //! Public-facing consolidation types.
 
-use ai_memory_core::{PageId, PagePath};
+use ai_memory_core::{PageId, PagePath, Tier};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -70,8 +70,13 @@ pub struct ConsolidatedPageUpdate {
     /// When `kind` is `Rule` the consolidator overrides this to
     /// `_rules/<slug>.md` regardless — see `PageKind::Rule`.
     pub path: String,
-    /// Tier (`semantic`, `episodic`, `procedural`, `working`).
-    pub tier: String,
+    /// Tier classification. Typed as the [`Tier`] enum (not a free
+    /// `String`) so schemars emits a closed enum in the generated
+    /// JSON schema. Before this change schemars produced
+    /// `{ "type": "string" }` with no constraint, and both Kimi
+    /// and qwen3 routinely emitted `tier: 2` (integer) instead of
+    /// the documented string values.
+    pub tier: Tier,
     /// Semantic classification. Defaults to `fact` if the LLM
     /// doesn't supply one — existing consolidations without this
     /// field still deserialise.

@@ -251,20 +251,30 @@ mod tests {
     #[test]
     fn normalize_strips_trailing_slash_and_v1() {
         // The three conventions found in the wild.
-        assert_eq!(normalize_openai_base("https://api.openai.com"),
-                   "https://api.openai.com");
-        assert_eq!(normalize_openai_base("https://api.openai.com/"),
-                   "https://api.openai.com");
+        assert_eq!(
+            normalize_openai_base("https://api.openai.com"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            normalize_openai_base("https://api.openai.com/"),
+            "https://api.openai.com"
+        );
         // OpenRouter's docs / ai-memory's OpenRouter env entry.
-        assert_eq!(normalize_openai_base("https://openrouter.ai/api/v1"),
-                   "https://openrouter.ai/api");
+        assert_eq!(
+            normalize_openai_base("https://openrouter.ai/api/v1"),
+            "https://openrouter.ai/api"
+        );
         // Ollama's openai-compat path (`docker logs` shows it
         // canonically advertised this way).
-        assert_eq!(normalize_openai_base("http://localhost:11434/v1"),
-                   "http://localhost:11434");
+        assert_eq!(
+            normalize_openai_base("http://localhost:11434/v1"),
+            "http://localhost:11434"
+        );
         // Don't accidentally strip a `/v1` that's part of a longer
         // segment (e.g. `/v123/`).
-        assert_eq!(normalize_openai_base("https://example.com/v123"),
-                   "https://example.com/v123");
+        assert_eq!(
+            normalize_openai_base("https://example.com/v123"),
+            "https://example.com/v123"
+        );
     }
 }

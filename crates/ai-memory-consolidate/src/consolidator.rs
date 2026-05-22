@@ -225,7 +225,7 @@ impl Consolidator {
                 upd.path.clone()
             };
             let path = PagePath::new(final_path)?;
-            let tier = upd.tier.parse::<Tier>().unwrap_or(Tier::Semantic);
+            let tier = upd.tier;
             let mut fm = serde_json::Map::new();
             fm.insert("title".into(), serde_json::Value::String(upd.title.clone()));
             fm.insert(
@@ -331,18 +331,42 @@ pub fn build_batch_request(session_id: SessionId, observations: &[Observation]) 
          - concepts/<slug>.md         (semantic, evergreen concept pages)\n\
          - decisions/<short>.md       (semantic, ADR-style records)\n\
          - gotchas/<slug>.md          (semantic, failure modes / surprises)\n\
-         \nClassify each update with one of these `kind` values:\n\
-         - `decision` (the project chose X over Y)\n\
-         - `gotcha`   (a failure mode or surprise worth remembering)\n\
-         - `rule`     (durable project convention: \"always X\", \"never Y\")\n\
-         - `fact`     (everything else; the default)\n\
+         \nSet `tier` to EXACTLY ONE of these four strings — never an integer, never a synonym:\n\
+         - \"working\"      (the live in-progress slice of the session — rarely used here)\n\
+         - \"episodic\"     (per-session narrative; the sessions/<id>.md page)\n\
+         - \"semantic\"     (durable knowledge: concepts/, decisions/, gotchas/, rules)\n\
+         - \"procedural\"   (repeated patterns extracted from many episodic pages)\n\
+         \nSet `kind` to EXACTLY ONE of these four strings — never an integer, never \"session\" / \"concept\" / \"note\":\n\
+         - \"decision\" (the project chose X over Y)\n\
+         - \"gotcha\"   (a failure mode or surprise worth remembering)\n\
+         - \"rule\"     (durable project convention: \"always X\", \"never Y\")\n\
+         - \"fact\"     (everything else; the default — use this for session narratives and plain concept notes)\n\
          \nWhen you mark an update as `rule`, write the body as a clear \
          standalone instruction the agent could follow on every relevant \
          action. The path you suggest for a rule will be overridden — the \
          system routes rules to `_rules/<slug>.md` automatically and the \
          lint pass surfaces a hint to copy it into the project's CLAUDE.md.\
-         \n\nEach update must include a title, markdown body, tier, kind, \
-         and tags.\n",
+         \n## Required JSON keys on every update (use these EXACT names)\n\
+         - \"path\"            (string)  required — the wiki path\n\
+         - \"title\"           (string)  required — the page title\n\
+         - \"body_markdown\"   (string)  required — the page body in Markdown; NOTE the underscore + the suffix `_markdown`, NOT just `body`\n\
+         - \"tier\"            (string)  required — one of the four tier strings above\n\
+         - \"kind\"            (string)  required — one of the four kind strings above\n\
+         - \"tags\"            (array of string)  required — may be empty `[]`, but the key must be present\n\
+         No other keys. No `body`, no `content`, no `summary`. Field names \
+         are case-sensitive and the `_markdown` suffix matters.\n\
+         \n## Output format (read this carefully)\n\
+         Reply with ONE JSON object matching the ConsolidatedBatch schema, \
+         and nothing else. NO prose preamble, NO trailing commentary, NO \
+         markdown headers wrapping the JSON, NO ``` code fences. The very \
+         first character of your reply must be `{` and the very last `}`. \
+         Strings must be JSON strings (with double quotes), not numbers \
+         and not bare identifiers.\n\
+         \n## Top-level shape\n\
+         {\n\
+         \x20\x20\"updates\": [ /* 1-5 update objects with the keys above */ ],\n\
+         \x20\x20\"rationale\": \"<one short sentence about why this batch>\"\n\
+         }\n",
     );
     ChatRequest {
         system: Some(BATCH_SYSTEM_PROMPT.into()),
