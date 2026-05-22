@@ -4,7 +4,7 @@
 > OpenAI Codex in the same directory, continue without re-explaining the
 > architecture, the failed approaches, or the open questions.
 
-[![status: under construction](https://img.shields.io/badge/status-under--construction-orange)](docs/design-decisions.md)
+[![status: v0.2 milestones complete](https://img.shields.io/badge/status-v0.2--complete-green)](docs/ARCHITECTURE.md)
 [![Rust](https://img.shields.io/badge/rust-1.95+-blue)](rust-toolchain.toml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 
@@ -33,11 +33,19 @@ for how this project implements it.
 
 ## Status
 
-**Under construction.** Currently at milestone **M0** (workspace bootstrap +
-CI + config). Next: **M1** — SQLite substrate + file watcher + FTS5 search.
+**v0.2 complete.** Milestones M0 through M10 have shipped:
 
-See [`docs/design-decisions.md`](docs/design-decisions.md) for the full
-roadmap. v1 ships when M0–M8 are all complete; vectors arrive in v0.2 (M9).
+- ✅ **M0–M1** — Workspace, SQLite substrate, FTS5, file watcher, atomic writes.
+- ✅ **M2 / M2.5** — MCP server (`rmcp` 1.7), Docker image, backup/restore.
+- ✅ **M3 / M4** — Auto-capture via Claude Code / Codex / OpenCode hooks; typed cross-agent handoffs.
+- ✅ **M5 / M6** — Wiki git versioning with auto-commit; LLM provider trait (Anthropic, OpenAI, OpenAI-compat).
+- ✅ **M7a / M7b** — Karpathy-style single-page LLM consolidation + multi-page atomic fan-out.
+- ✅ **M8** — Retention sweep with episodic decay + access reinforcement; rule + LLM lint.
+- ✅ **M9** — Pluggable embedders (OpenAI, Voyage, plus a deterministic synthetic embedder for tests); hybrid RRF retrieval over `page_embeddings`.
+- ✅ **M10** — Recall@5 eval harness, consolidated [`ARCHITECTURE.md`](docs/ARCHITECTURE.md), this README refresh.
+
+Single-package design: **57 unit + integration tests passing**,
+`cargo clippy --workspace -D warnings` clean, `cargo fmt --check` clean.
 
 ## Architecture in 60 seconds
 
@@ -49,20 +57,26 @@ data directory containing:
 <data_dir>/
 ├── wiki/        # markdown source of truth (git-versioned)
 ├── raw/         # immutable session log archive
-├── db/          # SQLite (FTS5 + sqlite-vec) — derived index
-├── models/      # bundled embedding model (v0.2+)
+├── db/          # SQLite (FTS5 + page_embeddings) — derived index
+├── models/      # reserved for local embedding model (v0.3+)
 └── logs/        # rolling daily tracing output
 ```
 
 Agent lifecycle hooks fire-and-forget POST to the server's HTTP ingress.
 The server queues writes through a single SQLite writer (no
 `database is locked`). On session end, an optional LLM-driven pass
-rewrites 5–15 wiki pages atomically with supersession (`is_latest=false`
-+ `supersedes` chain). Retrieval is hierarchical: `index.md` first, then
-page-level FTS5, then optional graph-walk expansion.
+rewrites pages atomically with supersession (`is_latest=false` +
+`supersedes` chain) and opens a typed handoff for the next agent. The
+retention sweep (M8) decays unused episodic content while semantic
+concept pages compound forever; pinned pages are exempt. Retrieval is
+FTS5 by default; when an embedder is configured, hybrid RRF over
+`page_embeddings` joins the FTS5 ranks.
 
-Storage moves between machines via `git push` of the wiki dir +
-`sqlite3 .backup` of the DB, or just `rsync` of the data dir.
+Storage moves between machines via `ai-memory backup --to <tarball>`
+(SQLite online backup + git wiki) or just `rsync` of the data dir.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the canonical
+data-flow diagram + crate breakdown + cross-cutting invariants.
 
 ## Quick start
 
@@ -92,20 +106,49 @@ docker compose -f docker/docker-compose.yml up -d --build
 # Attach Claude Code at http://localhost:7777/mcp
 ```
 
-### Other CLI commands
+### Full CLI subcommand list
 
 ```bash
-./target/release/ai-memory --help              # full subcommand list
+./target/release/ai-memory --help              # full subcommand tree
 ./target/release/ai-memory init                # create the data dir layout
-./target/release/ai-memory write-page \
-    --path notes/foo.md --title Foo --body "..." # exercise the wiki write
-./target/release/ai-memory search "karpathy"   # FTS5 query
-./target/release/ai-memory recent              # (M2-B) most-recent pages
-./target/release/ai-memory status --json       # counts + paths
+./target/release/ai-memory serve               # MCP server (stdio default; +http)
 ./target/release/ai-memory watch               # standalone filesystem watcher
-./target/release/ai-memory serve               # MCP server (stdio default)
-./target/release/ai-memory reset --confirm     # wipe data (refuses if siblings alive)
+./target/release/ai-memory write-page \
+    --path notes/foo.md --title Foo --body "..." # manual wiki write
+./target/release/ai-memory search "karpathy"   # FTS5 query (CLI only; MCP picks hybrid when embedder set)
+./target/release/ai-memory status --json       # counts + paths
+./target/release/ai-memory commit -m "..."     # stage + commit the wiki repo
+./target/release/ai-memory backup --to bak.tar.gz       # SQLite online backup → tarball
+./target/release/ai-memory restore --from bak.tar.gz    # extract + re-open
+./target/release/ai-memory reset --confirm     # wipe data (refuses while siblings alive)
+./target/release/ai-memory install-hooks --agent claude-code  # print hook config snippet
+./target/release/ai-memory llm-test --provider anthropic --model claude-sonnet-4-7 --prompt "hi"
+./target/release/ai-memory forget-sweep [--dry-run]     # M8 retention
+./target/release/ai-memory lint        [--dry-run]      # M8 rule + LLM lint
+./target/release/ai-memory embed       [--dry-run]      # M9 backfill embeddings
 ```
+
+### Optional features via env
+
+The system runs with **zero LLM / zero embedder configured** — pure
+FTS5 retrieval, synthetic session summaries, no consolidation. Add
+features by setting env vars; everything is opt-in.
+
+```bash
+# Enable LLM-driven consolidation + lint contradiction detection
+AI_MEMORY_LLM_PROVIDER=anthropic
+AI_MEMORY_LLM_MODEL=claude-sonnet-4-7
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Enable hybrid retrieval (RRF over FTS5 + vector cosine)
+AI_MEMORY_EMBEDDING_PROVIDER=openai
+AI_MEMORY_EMBEDDING_MODEL=text-embedding-3-small
+AI_MEMORY_EMBEDDING_DIM=1536
+OPENAI_API_KEY=sk-...
+```
+
+Then run `ai-memory embed` once to backfill embeddings for existing
+pages.
 
 ### Override the data dir
 
@@ -119,11 +162,10 @@ on macOS.
 
 ## Docs
 
-Long-form research and design lives under [`docs/`](docs/):
-
 | File | What it is |
 |---|---|
-| [`design-decisions.md`](docs/design-decisions.md) | **Read first.** The full spec: storage, MCP surface, hooks, lifecycle, mistakes-to-avoid checklist. |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | **Read first.** Operational summary: data flow, crate layout, cross-cutting invariants, current schema. |
+| [`docs/design-decisions.md`](docs/design-decisions.md) | The full v1 spec — storage, MCP surface, hooks, lifecycle, mistakes-to-avoid checklist. |
 | [`research-karpathy-llm-wiki.md`](docs/research-karpathy-llm-wiki.md) | What Karpathy actually said + community extensions, with sources. |
 | [`research-agentmemory.md`](docs/research-agentmemory.md) | Deep-dive on the TypeScript predecessor; ideas to reuse and substrate to drop. |
 | [`research-basic-memory.md`](docs/research-basic-memory.md) | The manual-write-note model we explicitly diverge from. |

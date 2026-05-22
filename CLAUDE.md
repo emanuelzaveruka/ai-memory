@@ -11,8 +11,9 @@ Storage = markdown-in-git wiki (source of truth) + SQLite (derived index).
 Capture = automatic via agent lifecycle hooks, never manual `write_note`.
 Consolidation = Karpathy "LLM Wiki" pattern with versioned supersession.
 
-Read [`docs/design-decisions.md`](docs/design-decisions.md) for the full spec.
-Read [`docs/research-karpathy-llm-wiki.md`](docs/research-karpathy-llm-wiki.md)
+Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first for the
+operational summary. Read [`docs/design-decisions.md`](docs/design-decisions.md)
+for the full v1 spec. Read [`docs/research-karpathy-llm-wiki.md`](docs/research-karpathy-llm-wiki.md)
 for what "Karpathy-faithful" means in practice.
 
 ## Stack (do not deviate without updating `docs/design-decisions.md` §4)
