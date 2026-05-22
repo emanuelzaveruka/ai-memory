@@ -33,3 +33,38 @@ mu = 0.04
 salience_default = 1.0
 cold_threshold = 0.20
 hard_delete_after_days = 180
+
+# Privacy strip.
+#
+# Built-in patterns ALWAYS run; they cover bearer tokens, vendor-prefixed
+# API keys (sk-, sk_live_, ghp_, github_pat_, AKIA, AIza, xoxb/xoxp/xoxa/
+# xapp, Slack-shaped tokens), JWTs, PEM-bracketed private keys,
+# URL-embedded credentials (postgres://user:pass@host), the named env
+# vars for every supported provider, the generic `*_(KEY|TOKEN|SECRET|
+# PASSWORD|CREDENTIAL)=…` shape, and filesystem paths under ~/.ssh,
+# ~/.aws, ~/.kube, ~/.config/gcloud, ~/.gnupg.
+#
+# Two optional fields tune the strip:
+#
+#   extra_patterns — additional regex patterns to redact. Compiled once
+#                    at startup; an invalid regex aborts startup with a
+#                    clear error.
+#   allowlist      — substrings that should never be redacted, even if a
+#                    pattern matches them. Useful when a project codename
+#                    or stable identifier collides with the generic
+#                    env-var catch-all.
+#
+# Examples (uncomment to use):
+#
+#   extra_patterns = [
+#     # Internal project token format: PROJ-<32 hex chars>.
+#     "PROJ-[0-9a-f]{32}",
+#   ]
+#   allowlist = [
+#     # We don't want this public identifier redacted by the generic
+#     # *_KEY catch-all even though it ends in "_KEY".
+#     "PUBLIC_VERIFY_KEY",
+#   ]
+[sanitize]
+extra_patterns = []
+allowlist = []

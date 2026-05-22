@@ -48,6 +48,10 @@ pub struct AiMemoryServer {
     /// M9 embedder for hybrid query. When `None`, `memory_query`
     /// falls back to pure FTS5.
     embedder: Option<Arc<dyn Embedder>>,
+    /// Privacy strip. Applied to agent-supplied handoff fields in
+    /// `memory_handoff_begin` (handoffs bypass `Wiki::write_page` so
+    /// the wiki-level scrub doesn't cover them).
+    sanitizer: ai_memory_core::Sanitizer,
     // Read by the `#[tool_handler]` macro expansion; rustc's dead-code
     // analysis can't see that, so the lint must be allowed explicitly.
     #[allow(dead_code)]
@@ -155,8 +159,17 @@ impl AiMemoryServer {
             wiki: None,
             decay_params: DecayParams::default(),
             embedder: None,
+            sanitizer: ai_memory_core::Sanitizer::builtin(),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Replace the default built-in-only sanitizer with one carrying
+    /// the operator's `[sanitize]` extras + allowlist.
+    #[must_use]
+    pub fn with_sanitizer(mut self, sanitizer: ai_memory_core::Sanitizer) -> Self {
+        self.sanitizer = sanitizer;
+        self
     }
 
     /// Attach an embedder for hybrid (FTS5 + vector RRF) query. Without
@@ -381,6 +394,12 @@ impl AiMemoryServer {
         &self,
         Parameters(args): Parameters<HandoffBeginArgs>,
     ) -> Result<CallToolResult, McpError> {
+        // Handoffs bypass `Wiki::write_page` (they live in their own
+        // table), so scrub the agent-supplied free-text here. We don't
+        // touch `cwd` or `files_touched` — they're path lists that the
+        // path-pattern regexes already cover when applicable, but we
+        // pass each entry through anyway as defence-in-depth.
+        let s = &self.sanitizer;
         let handoff = NewHandoff {
             workspace_id: self.workspace_id,
             project_id: self.project_id,
@@ -388,10 +407,10 @@ impl AiMemoryServer {
             from_agent: AgentKind::Other,
             to_agent: None,
             cwd: args.cwd.map(std::path::PathBuf::from),
-            summary: args.summary,
-            open_questions: args.open_questions,
-            next_steps: args.next_steps,
-            files_touched: args.files_touched,
+            summary: s.scrub(&args.summary),
+            open_questions: args.open_questions.iter().map(|q| s.scrub(q)).collect(),
+            next_steps: args.next_steps.iter().map(|n| s.scrub(n)).collect(),
+            files_touched: args.files_touched.iter().map(|f| s.scrub(f)).collect(),
         };
         let id = self
             .writer

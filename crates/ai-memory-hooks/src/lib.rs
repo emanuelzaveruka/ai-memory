@@ -10,9 +10,10 @@
 //!    (lesson from agentmemory #221 — hooks that `await` REST round-trips
 //!    can deadlock the engine under fan-out).
 //! 3. The server parses the body as JSON, runs it through the
-//!    [`sanitize`] redaction layer, and forwards a [`Sanitized<NewObservation>`]
-//!    to the store writer. On `SessionEnd` it also synthesises a wiki
-//!    page summarising the session via [`synth`].
+//!    [`ai_memory_core::Sanitizer`] redaction layer, and forwards a
+//!    [`ai_memory_core::Sanitized<NewObservation>`] to the store writer.
+//!    On `SessionEnd` it also synthesises a wiki page summarising the
+//!    session via [`synth`].
 //!
 //! Privacy strip is a *typed* boundary: there is no way to write an
 //! observation without first passing through `Sanitized::new`.
@@ -20,10 +21,11 @@
 pub mod log;
 pub mod payload;
 pub mod router;
-pub mod sanitize;
 pub mod synth;
 
+// Re-export the sanitizer types from core so callers that grew up
+// pointing at this crate's `sanitize` module keep working.
+pub use ai_memory_core::{SanitizeConfig, Sanitized, Sanitizer};
 pub use payload::{HookEnvelope, HookEvent};
 pub use router::{HookState, hook_router};
-pub use sanitize::Sanitized;
 pub use synth::synthesize_session_page;

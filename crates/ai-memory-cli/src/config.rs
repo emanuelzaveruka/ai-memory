@@ -31,6 +31,9 @@ pub struct Config {
     /// hard-deletion. Tune `decay.lambda` down to slow decay or
     /// `decay.cold_threshold` to evict more / less aggressively.
     pub decay: ai_memory_store::DecayParams,
+    /// Privacy-strip tuning. Built-in patterns always run; this section
+    /// lets the operator extend or punch holes in them.
+    pub sanitize: ai_memory_core::SanitizeConfig,
 }
 
 impl Default for Config {
@@ -40,6 +43,7 @@ impl Default for Config {
             bind: "127.0.0.1:49374".into(),
             log_level: "info".into(),
             decay: ai_memory_store::DecayParams::default(),
+            sanitize: ai_memory_core::SanitizeConfig::default(),
         }
     }
 }

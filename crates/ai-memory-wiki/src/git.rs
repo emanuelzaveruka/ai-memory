@@ -80,7 +80,7 @@ impl GitAdapter {
         // is nothing staged. Otherwise we'd produce an "initial" commit
         // pointing at the empty tree, which surprises both `git log`
         // and our own callers.
-        if repo.head().is_err() && index.len() == 0 {
+        if repo.head().is_err() && index.is_empty() {
             debug!("fresh repo, empty index; no commit");
             return Ok(None);
         }

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ai_memory_core::{NewPage, PageId, PagePath, ProjectId, Tier, WorkspaceId};
+use ai_memory_core::{NewPage, PageId, PagePath, ProjectId, Sanitizer, Tier, WorkspaceId};
 use ai_memory_llm::Embedder;
 use ai_memory_store::{WriterHandle, f32_vec_to_bytes};
 
@@ -25,6 +25,11 @@ pub struct Wiki {
     writer: WriterHandle,
     git: GitAdapter,
     embedder: Option<Arc<dyn Embedder>>,
+    /// Privacy strip applied to every page body before persistence.
+    /// Defence-in-depth: any caller path (LLM consolidation, manual
+    /// write-page CLI, agent-supplied tool input) still gets scrubbed
+    /// at the wiki boundary even if upstream forgot.
+    sanitizer: Sanitizer,
 }
 
 impl Wiki {
@@ -43,7 +48,16 @@ impl Wiki {
             writer,
             git,
             embedder: None,
+            sanitizer: Sanitizer::builtin(),
         })
+    }
+
+    /// Replace the default built-in-only sanitizer with one carrying
+    /// the operator's `[sanitize].extra_patterns` + `allowlist`.
+    #[must_use]
+    pub fn with_sanitizer(mut self, sanitizer: Sanitizer) -> Self {
+        self.sanitizer = sanitizer;
+        self
     }
 
     /// Attach an embedder. When set, every successful `write_page` /
@@ -158,7 +172,12 @@ impl Wiki {
             tempfile::NamedTempFile,
             std::path::PathBuf,
         )> = Vec::with_capacity(requests.len());
-        for req in requests {
+        for mut req in requests {
+            // Defence-in-depth scrub at the batch boundary too.
+            req.body = self.sanitizer.scrub(&req.body);
+            if let Some(t) = req.title.take() {
+                req.title = Some(self.sanitizer.scrub(&t));
+            }
             let title = derive_title(&req.frontmatter, &req.body, &req.path);
             let markdown = Markdown {
                 frontmatter: req.frontmatter.clone(),
@@ -229,8 +248,16 @@ impl Wiki {
             title: explicit_title,
         } = req;
 
+        // Defence-in-depth: scrub the body before we touch disk or the
+        // store, regardless of caller. The hook ingress already scrubs
+        // observation text; this catches LLM-rewritten consolidation
+        // bodies, manual `write-page` CLI inputs, and anything an MCP
+        // tool slips through.
+        let body = self.sanitizer.scrub(&body);
+
         let title = explicit_title
             .clone()
+            .map(|t| self.sanitizer.scrub(&t))
             .unwrap_or_else(|| derive_title(&frontmatter, &body, &path));
         let markdown = Markdown {
             frontmatter: frontmatter.clone(),
@@ -376,6 +403,71 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Karpathy LLM Wiki");
         assert!(hits[0].snippet.contains("compile"));
+    }
+
+    /// Defence-in-depth: anything that reaches `write_page` gets
+    /// scrubbed at the wiki boundary, even if upstream callers (LLM
+    /// consolidation output, manual `write-page` CLI input, MCP tool
+    /// args) skipped the hook-ingress sanitizer.
+    #[tokio::test]
+    async fn write_page_scrubs_secrets_at_the_wiki_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ws = store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+        let proj = store
+            .writer
+            .get_or_create_project(ws, "scratch", None)
+            .await
+            .unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone()).unwrap();
+
+        let body = "we agreed to use ANTHROPIC_API_KEY=sk-ant-leak-1234567890abcdef \
+                    and the canary id sk-canary-LEAK_ME_PLEASE_xxxxxxxxxxxx — see \
+                    postgres://admin:hunter2@db.internal/prod for details";
+        wiki.write_page(req(
+            ws,
+            proj,
+            "notes/leaky.md",
+            body,
+            serde_json::json!({ "title": "leaky" }),
+        ))
+        .await
+        .unwrap();
+
+        let on_disk = std::fs::read_to_string(tmp.path().join("wiki/notes/leaky.md")).unwrap();
+        // The on-disk page must not contain any of the planted
+        // secrets; each should have been replaced with [REDACTED].
+        assert!(
+            on_disk.contains("[REDACTED]"),
+            "expected redaction in: {on_disk}"
+        );
+        assert!(
+            !on_disk.contains("sk-ant-leak"),
+            "anthropic key leaked: {on_disk}"
+        );
+        assert!(
+            !on_disk.contains("LEAK_ME_PLEASE"),
+            "canary leaked: {on_disk}"
+        );
+        assert!(
+            !on_disk.contains("hunter2"),
+            "DB password leaked: {on_disk}"
+        );
+
+        // The store-indexed body must also be scrubbed (so FTS5 + the
+        // MCP query path never surface the raw secret either).
+        let hits = store
+            .reader
+            .search_pages("REDACTED".into(), 5)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(!hits[0].snippet.contains("sk-ant-leak"));
+        assert!(!hits[0].snippet.contains("hunter2"));
     }
 
     #[tokio::test]

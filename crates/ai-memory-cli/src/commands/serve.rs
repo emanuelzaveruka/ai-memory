@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use ai_memory_consolidate::Consolidator;
+use ai_memory_core::Sanitizer;
 use ai_memory_hooks::{HookState, hook_router};
 use ai_memory_llm::{build_embedder, embedder_from_env, provider_from_env};
 use ai_memory_mcp::AiMemoryServer;
@@ -36,7 +37,13 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
         .writer
         .get_or_create_project(ws, args.project.clone(), None)
         .await?;
-    let mut wiki = Wiki::new(&config.data_dir, store.writer.clone())?;
+    // Build the privacy strip from config. Compile errors in
+    // user-supplied regex abort startup with a clear message so
+    // operators discover misconfiguration immediately.
+    let sanitizer = Sanitizer::new(&config.sanitize)
+        .context("compiling sanitizer.extra_patterns from config")?;
+    let mut wiki =
+        Wiki::new(&config.data_dir, store.writer.clone())?.with_sanitizer(sanitizer.clone());
 
     // M9 — pluggable embedder. Refuse to start if any stored
     // embeddings disagree with the configured (provider, model, dim).
@@ -82,7 +89,8 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
 
     let mut server = AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, proj)
         .with_wiki(wiki.clone())
-        .with_decay_params(config.decay);
+        .with_decay_params(config.decay)
+        .with_sanitizer(sanitizer.clone());
     if let Some(e) = embedder.clone() {
         server = server.with_embedder(e);
     }
@@ -136,6 +144,7 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                 reader: store.reader.clone(),
                 wiki: wiki.clone(),
                 consolidator: consolidator.clone(),
+                sanitizer: sanitizer.clone(),
             });
             let router = axum::Router::new()
                 .nest_service("/mcp", mcp_service)

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use ai_memory_consolidate::Consolidator;
 use ai_memory_core::{
     AgentKind, Handoff, NewHandoff, NewObservation, NewSession, ObservationKind, ProjectId,
-    SessionId, WorkspaceId,
+    Sanitized, Sanitizer, SessionId, WorkspaceId,
 };
 use ai_memory_store::WriterHandle;
 use ai_memory_wiki::Wiki;
@@ -30,7 +30,6 @@ use uuid::Uuid;
 
 use crate::log;
 use crate::payload::{HookEnvelope, HookEvent, HookQuery, parse_agent};
-use crate::sanitize::Sanitized;
 use crate::synth::synthesize_session_page;
 
 /// Shared state passed to the hook handler.
@@ -51,6 +50,10 @@ pub struct HookState {
     /// working context. When `None`, falls back to the deterministic
     /// rule-based synth (still useful, just lower-signal).
     pub consolidator: Option<Arc<Consolidator>>,
+    /// Privacy strip applied to every observation before it lands in
+    /// the store. Same handle is also held by the wiki and consolidator
+    /// so scrubbing happens at every write boundary.
+    pub sanitizer: Sanitizer,
 }
 
 /// Build a router with `POST /hook` (event ingress) and `GET /handoff`
@@ -196,7 +199,7 @@ async fn process(state: &HookState, env: HookEnvelope) -> anyhow::Result<()> {
         body,
         importance: importance_for(env.event),
     };
-    let sanitized = Sanitized::new(raw_obs);
+    let sanitized = Sanitized::new(raw_obs, &state.sanitizer);
     let _ = state
         .writer
         .insert_observation(sanitized.inner().clone())
@@ -216,10 +219,10 @@ async fn process(state: &HookState, env: HookEnvelope) -> anyhow::Result<()> {
     // the working state before the agent's compaction throws it out
     // of context. Does NOT end the session and does NOT create a
     // handoff. The eventual SessionEnd supersedes this page.
-    if matches!(env.event, HookEvent::PreCompact) {
-        if let Err(e) = consolidate_or_synth(state, session_id).await {
-            warn!(error = %e, "PreCompact consolidation failed; continuing");
-        }
+    if matches!(env.event, HookEvent::PreCompact)
+        && let Err(e) = consolidate_or_synth(state, session_id).await
+    {
+        warn!(error = %e, "PreCompact consolidation failed; continuing");
     }
 
     // On SessionEnd, synthesize the summary page, end the session, and

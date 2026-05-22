@@ -85,9 +85,11 @@ name = "ai-memory-core"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tracing",
  "uuid",
 ]
 
