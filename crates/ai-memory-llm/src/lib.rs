@@ -29,7 +29,7 @@ pub mod types;
 
 pub use anthropic::AnthropicProvider;
 pub use error::{LlmError, LlmResult};
-pub use factory::{ProviderChoice, ProviderConfig, build_provider};
+pub use factory::{ProviderChoice, ProviderConfig, build_provider, provider_from_env};
 pub use openai::OpenAiProvider;
 pub use openai_compat::OpenAiCompatProvider;
 pub use provider::{LlmProvider, complete_structured};

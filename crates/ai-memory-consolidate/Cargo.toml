@@ -10,6 +10,19 @@ description = "Karpathy-style ingest / query / lint consolidation pipeline."
 
 [dependencies]
 ai-memory-core.workspace = true
+ai-memory-store.workspace = true
+ai-memory-wiki.workspace = true
+ai-memory-llm.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

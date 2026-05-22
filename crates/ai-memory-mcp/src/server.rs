@@ -1,7 +1,13 @@
 //! [`AiMemoryServer`] — the MCP server skeleton + tool router.
 
-use ai_memory_core::{AgentKind, NewHandoff, ProjectId, WorkspaceId};
+use std::str::FromStr;
+use std::sync::Arc;
+
+use ai_memory_consolidate::Consolidator;
+use ai_memory_core::{AgentKind, NewHandoff, ProjectId, SessionId, WorkspaceId};
+use ai_memory_llm::LlmProvider;
 use ai_memory_store::{ReaderPool, WriterHandle};
+use ai_memory_wiki::Wiki;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -26,6 +32,9 @@ pub struct AiMemoryServer {
     workspace_id: WorkspaceId,
     project_id: ProjectId,
     default_limit: usize,
+    /// Optional LLM consolidator. When `None`, `memory_consolidate`
+    /// returns a "not configured" error.
+    consolidator: Option<Arc<Consolidator>>,
     // Read by the `#[tool_handler]` macro expansion; rustc's dead-code
     // analysis can't see that, so the lint must be allowed explicitly.
     #[allow(dead_code)]
@@ -57,6 +66,15 @@ struct QueryResponse<T: Serialize> {
 #[derive(Debug, Serialize)]
 struct StatusResponse {
     counts: ai_memory_store::StatusCounts,
+}
+
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+struct ConsolidateArgs {
+    /// UUID of the session to consolidate.
+    session_id: String,
+    /// If true, preview without writing. Default false.
+    #[serde(default)]
+    dry_run: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -102,8 +120,25 @@ impl AiMemoryServer {
             workspace_id,
             project_id,
             default_limit: 10,
+            consolidator: None,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Attach an LLM-backed consolidator. Without this, the
+    /// `memory_consolidate` tool errors with "not configured".
+    #[must_use]
+    pub fn with_consolidator(mut self, wiki: Wiki, llm: Arc<dyn LlmProvider>) -> Self {
+        let consolidator = Consolidator::new(
+            self.reader.clone(),
+            self.writer.clone(),
+            wiki,
+            llm,
+            self.workspace_id,
+            self.project_id,
+        );
+        self.consolidator = Some(Arc::new(consolidator));
+        self
     }
 
     /// Full-text search the wiki via FTS5. Returns up to `limit` hits with
@@ -142,6 +177,32 @@ impl AiMemoryServer {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let response = QueryResponse { hits };
         ok_json(&response)
+    }
+
+    /// LLM-driven consolidation of a session into a refreshed
+    /// `sessions/<id>.md` page (M7a single-page variant).
+    #[tool(description = "LLM-driven consolidation: rewrite the \
+        sessions/<id>.md page for the given session_id using the \
+        observation log + the current heuristic body. Off by default; \
+        requires AI_MEMORY_LLM_PROVIDER / AI_MEMORY_LLM_MODEL set on \
+        the server. Pass dry_run=true to preview without writing.")]
+    async fn memory_consolidate(
+        &self,
+        Parameters(args): Parameters<ConsolidateArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(consolidator) = self.consolidator.as_ref() else {
+            return Err(McpError::internal_error(
+                "memory_consolidate not configured (set AI_MEMORY_LLM_PROVIDER + AI_MEMORY_LLM_MODEL)",
+                None,
+            ));
+        };
+        let session_id = SessionId::from_str(&args.session_id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let outcome = consolidator
+            .consolidate_session(session_id, args.dry_run.unwrap_or(false))
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        ok_json(&outcome)
     }
 
     /// Create a handoff snapshot for the next agent CLI.

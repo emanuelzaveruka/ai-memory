@@ -37,6 +37,53 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
 }
 
+/// Build a [`ProviderConfig`] from the environment.
+///
+/// Reads `AI_MEMORY_LLM_PROVIDER`, `AI_MEMORY_LLM_MODEL`,
+/// `AI_MEMORY_LLM_BASE_URL`, and the appropriate API key
+/// (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `LLM_API_KEY`).
+/// Returns `Ok(None)` when `AI_MEMORY_LLM_PROVIDER` is unset — that
+/// is the canonical "no LLM features" path.
+///
+/// # Errors
+/// Returns [`LlmError::NotConfigured`] when the provider env var is
+/// set to an unknown value or when the model env var is missing.
+pub fn provider_from_env() -> LlmResult<Option<ProviderConfig>> {
+    let provider = match std::env::var("AI_MEMORY_LLM_PROVIDER") {
+        Ok(s) => match s.as_str() {
+            "anthropic" => ProviderChoice::Anthropic,
+            "openai" => ProviderChoice::OpenAi,
+            "openai-compat" | "openai_compat" => ProviderChoice::OpenAiCompat,
+            other => {
+                return Err(LlmError::NotConfigured(format!(
+                    "AI_MEMORY_LLM_PROVIDER={other} is not one of anthropic|openai|openai-compat"
+                )));
+            }
+        },
+        Err(_) => return Ok(None),
+    };
+    let model = std::env::var("AI_MEMORY_LLM_MODEL")
+        .map_err(|_| LlmError::NotConfigured("AI_MEMORY_LLM_MODEL".into()))?;
+    let base_url = std::env::var("AI_MEMORY_LLM_BASE_URL").ok();
+    let api_key = match provider {
+        ProviderChoice::Anthropic => std::env::var("ANTHROPIC_API_KEY")
+            .ok()
+            .map(secrecy::SecretString::from),
+        ProviderChoice::OpenAi => std::env::var("OPENAI_API_KEY")
+            .ok()
+            .map(secrecy::SecretString::from),
+        ProviderChoice::OpenAiCompat => std::env::var("LLM_API_KEY")
+            .ok()
+            .map(secrecy::SecretString::from),
+    };
+    Ok(Some(ProviderConfig {
+        provider,
+        model,
+        api_key,
+        base_url,
+    }))
+}
+
 /// Construct an `Arc<dyn LlmProvider>` matching the config.
 ///
 /// # Errors

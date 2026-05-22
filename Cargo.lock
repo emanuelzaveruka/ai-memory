@@ -64,6 +64,17 @@ name = "ai-memory-consolidate"
 version = "0.1.0"
 dependencies = [
  "ai-memory-core",
+ "ai-memory-llm",
+ "ai-memory-store",
+ "ai-memory-wiki",
+ "anyhow",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -118,8 +129,11 @@ dependencies = [
 name = "ai-memory-mcp"
 version = "0.1.0"
 dependencies = [
+ "ai-memory-consolidate",
  "ai-memory-core",
+ "ai-memory-llm",
  "ai-memory-store",
+ "ai-memory-wiki",
  "anyhow",
  "axum",
  "rmcp",

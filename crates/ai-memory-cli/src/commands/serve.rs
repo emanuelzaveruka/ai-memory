@@ -1,6 +1,7 @@
 //! `ai-memory serve` — MCP server with optional filesystem watcher.
 
 use ai_memory_hooks::{HookState, hook_router};
+use ai_memory_llm::provider_from_env;
 use ai_memory_mcp::AiMemoryServer;
 use ai_memory_store::Store;
 use ai_memory_wiki::{WatcherHandle, Wiki};
@@ -48,7 +49,18 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
         Some(WatcherHandle::start(wiki.clone(), ws, proj)?)
     };
 
-    let server = AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, proj);
+    let mut server = AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, proj);
+    if let Some(cfg) = provider_from_env()? {
+        let llm = ai_memory_llm::build_provider(cfg).context("building LLM provider from env")?;
+        info!(
+            provider = llm.name(),
+            model = llm.model(),
+            "memory_consolidate tool enabled",
+        );
+        server = server.with_consolidator(wiki.clone(), llm);
+    } else {
+        info!("AI_MEMORY_LLM_PROVIDER unset; memory_consolidate disabled");
+    }
 
     match args.transport {
         TransportKind::Stdio => {
