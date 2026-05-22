@@ -234,13 +234,53 @@ Both models **correctly restrained themselves** on fixture
 non-trivial test the original schema-broken Run 1 couldn't
 even reach.
 
-### Kimi-K2.6 (OpenRouter) vs qwen3:32b (Ollama)
+### Kimi-K2.6 (OpenRouter) — INELIGIBLE for this task
 
-_(Run in flight at the time of writing — will update with
-numbers once it lands. The expectation is that Kimi's "prose
-slips" issue from Run 1 is now mitigated by the explicit
-"NO ``` code fences, NO prose preamble, first char must be `{`"
-directives; we expect Kimi to also reach 4-5/5 parse rate.)_
+After the prompt + schema fixes, the Kimi rerun **hung for
+16+ minutes on the first fixture** and never returned a parseable
+response. Direct probing of the OpenRouter endpoint showed
+why:
+
+```
+$ curl … -d '{"model":"moonshotai/kimi-k2.6", "max_tokens": 50, ...}'
+{
+  "choices": [{
+    "message": {
+      "content": null,          ← no actual content
+      "reasoning": "...208 chars..."
+    }
+  }],
+  "usage": { "completion_tokens": 50, "reasoning_tokens": 50 }
+}
+```
+
+Kimi-K2.6 is a **reasoning model**: it consumes the
+`max_tokens` budget internally as "thinking" before emitting
+visible `content`. For a short probe with `max_tokens: 50`,
+all 50 tokens went to reasoning and content stayed `null`.
+
+For the consolidation prompt with `max_tokens: 4000`, Kimi
+would happily reason for many minutes against the strict-JSON
+instructions before *either* emitting JSON or running out of
+budget with no content. The eval observed 16 minutes of no
+progress on fixture 1 before being killed.
+
+This is **not a fixable prompt or schema issue** — it's a
+property of the model's response style. Run 1 only "worked"
+on Kimi (in the sense of producing *something*) because the
+loose prompt let Kimi emit prose markdown, which used `content`
+naturally. The post-fix strict-JSON prompt provokes Kimi's
+reasoning mode and starves the visible response.
+
+**Kimi-K2.6 is not a suitable provider for ai-memory's
+consolidation workload.** It would work for the broader
+"summarise this for me" use case where formatted prose is
+fine — just not for our JSON-schema-validated path.
+
+Other reasoning-mode models (Claude with extended thinking,
+GPT-o3, Gemini "thinking" variants) would need the same
+caveat: turn off reasoning mode, or budget tokens with
+reasoning consumption in mind.
 
 ## Qualitative read (Run 2)
 
@@ -301,12 +341,20 @@ this project.** With the prompt + schema fixes applied:
   comprehensive.
 
 **Recommendation: keep Ollama qwen3:32b as the default
-production LLM** (where ai-memory now points). Sonnet remains
-a useful escape hatch for one-off complex consolidations,
-batch lint runs against very large wikis, or situations where
-the home server is unreachable. Kimi sits in an awkward
-middle: comparable cost-per-call to Sonnet on OpenRouter, less
-output discipline.
+production LLM** (where ai-memory now points). Sonnet 4.5
+remains a useful escape hatch for one-off complex
+consolidations, batch lint runs against very large wikis, or
+situations where the home server is unreachable. **Avoid
+Kimi-K2.6** for this workload — its reasoning-model response
+style is incompatible with strict-JSON output.
+
+Cost comparison (rough order-of-magnitude, per consolidation):
+
+| Provider                | $/run | latency | notes |
+|---|---|---|---|
+| Ollama qwen3:32b (local) | $0    | ~100 s  | electricity not modeled |
+| Sonnet 4.5 (OpenRouter)  | ~$0.06| ~26 s   | depends on output size  |
+| Kimi-K2.6 (OpenRouter)   | —     | ✗       | inappropriate task fit  |
 
 ### When to revisit
 
