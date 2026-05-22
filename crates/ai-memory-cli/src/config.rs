@@ -42,6 +42,23 @@ pub struct Config {
     /// Privacy-strip tuning. Built-in patterns always run; this section
     /// lets the operator extend or punch holes in them.
     pub sanitize: ai_memory_core::SanitizeConfig,
+    /// Bearer token required on every HTTP request. When `None`/unset,
+    /// the server runs open (zero-config local-dev behaviour). When set,
+    /// requests to /mcp + /hook + /handoff must carry
+    /// `Authorization: Bearer <token>`. Settable via the
+    /// `AI_MEMORY_AUTH_TOKEN` env var or `[auth].bearer_token` in
+    /// config.toml.
+    pub auth: AuthSettings,
+}
+
+/// `[auth]` section of `config.toml`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuthSettings {
+    /// Shared bearer token. When set, all HTTP routes require
+    /// `Authorization: Bearer <token>`. Generate one with
+    /// `ai-memory generate-auth-token`.
+    pub bearer_token: Option<String>,
 }
 
 impl Default for Config {
@@ -52,6 +69,7 @@ impl Default for Config {
             log_level: "info".into(),
             decay: ai_memory_store::DecayParams::default(),
             sanitize: ai_memory_core::SanitizeConfig::default(),
+            auth: AuthSettings::default(),
         }
     }
 }

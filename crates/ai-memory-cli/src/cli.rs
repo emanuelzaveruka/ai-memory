@@ -61,6 +61,18 @@ pub enum Command {
     Lint(LintArgs),
     /// Compute + store embeddings for every latest page (M9).
     Embed(EmbedArgs),
+    /// Generate a random hex bearer token for AI_MEMORY_AUTH_TOKEN.
+    GenerateAuthToken(GenerateAuthTokenArgs),
+}
+
+/// Arguments for `generate-auth-token`.
+#[derive(Debug, Args)]
+pub struct GenerateAuthTokenArgs {
+    /// Number of random bytes of entropy. The token printed is hex-
+    /// encoded, so the output length is 2× this value. 32 bytes
+    /// (256 bits) is plenty for any homelab threat model.
+    #[arg(long, default_value_t = 32)]
+    pub bytes: usize,
 }
 
 /// Arguments for `init`.
@@ -262,6 +274,12 @@ pub struct InstallHooksArgs {
     /// Server URL the hooks will POST to.
     #[arg(long, default_value = "http://127.0.0.1:49374")]
     pub server_url: String,
+    /// Bearer token to embed in the hook config's `env` block. When
+    /// set, every hook call carries `Authorization: Bearer <token>`,
+    /// matching what the server requires when AI_MEMORY_AUTH_TOKEN
+    /// is set there. Generate one with `ai-memory generate-auth-token`.
+    #[arg(long, env = "AI_MEMORY_AUTH_TOKEN", hide_env_values = true)]
+    pub auth_token: Option<String>,
 }
 
 /// Arguments for `install-mcp`.
@@ -276,6 +294,12 @@ pub struct InstallMcpArgs {
     /// Friendly name the client should show for this server entry.
     #[arg(long, default_value = "ai-memory")]
     pub name: String,
+    /// Bearer token to embed in the client config. When set, the
+    /// rendered snippet includes an `Authorization: Bearer <token>`
+    /// header so the client can authenticate against a server that
+    /// requires it. Picked up from `AI_MEMORY_AUTH_TOKEN` if unset.
+    #[arg(long, env = "AI_MEMORY_AUTH_TOKEN", hide_env_values = true)]
+    pub auth_token: Option<String>,
 }
 
 /// Transport for the MCP server.

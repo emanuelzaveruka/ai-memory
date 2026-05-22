@@ -10,6 +10,7 @@ use ai_memory_mcp::AiMemoryServer;
 use ai_memory_store::Store;
 use ai_memory_wiki::{WatcherHandle, Wiki};
 use anyhow::{Context, Result};
+use axum::extract::DefaultBodyLimit;
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
 use rmcp::transport::streamable_http_server::{
@@ -18,8 +19,17 @@ use rmcp::transport::streamable_http_server::{
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use crate::auth::{AuthState, require_bearer};
 use crate::cli::{ServeArgs, TransportKind};
 use crate::config::Config;
+
+/// 10 MB cap on inbound HTTP bodies. The /hook ingress accepts the
+/// agent's raw payload which can include a tool output excerpt
+/// (capped at 2 KB on our side via `truncate_excerpt`), but Claude
+/// Code et al. send the full envelope, which can run to a few KB.
+/// 10 MB is generous headroom; without a cap, axum streams unbounded
+/// bodies into memory (audit critical #2).
+const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 
 /// Run the `serve` subcommand.
 ///
@@ -146,16 +156,48 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                 consolidator: consolidator.clone(),
                 sanitizer: sanitizer.clone(),
             });
+            // Build the auth state. Precedence (highest first):
+            //   1. AI_MEMORY_AUTH_TOKEN env var
+            //   2. config.toml [auth].bearer_token
+            //   3. neither → open mode (no auth)
+            // Read env directly (not via figment) to match the pattern
+            // used by AI_MEMORY_LLM_* in factory.rs — keeps the
+            // operator's mental model simple.
+            let token = std::env::var("AI_MEMORY_AUTH_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| config.auth.bearer_token.clone());
+            let auth_state = Arc::new(AuthState::new(token));
+            let auth_enabled = auth_state.enabled();
             let router = axum::Router::new()
                 .nest_service("/mcp", mcp_service)
-                .merge(hooks);
+                .merge(hooks)
+                .layer(axum::middleware::from_fn_with_state(
+                    auth_state,
+                    require_bearer,
+                ))
+                .layer(DefaultBodyLimit::max(MAX_BODY_BYTES));
             let listener = tokio::net::TcpListener::bind(&bind)
                 .await
                 .with_context(|| format!("binding {bind}"))?;
             info!(
                 %bind,
+                auth = auth_enabled,
+                body_limit_mb = MAX_BODY_BYTES / 1024 / 1024,
                 "MCP HTTP server ready (POST /mcp, POST /hook, Ctrl-C to stop)",
             );
+            if !auth_enabled && !bind.starts_with("127.") {
+                // Loud warning: a non-loopback bind with no auth is
+                // the audit's critical-#1 scenario. The operator gets
+                // a one-line "you sure?" instead of silent exposure.
+                tracing::warn!(
+                    %bind,
+                    "no AI_MEMORY_AUTH_TOKEN configured AND binding to a non-loopback \
+                     address — anyone on the network can call destructive MCP tools. \
+                     Generate a token with `ai-memory generate-auth-token` and set \
+                     AI_MEMORY_AUTH_TOKEN in the server's environment."
+                );
+            }
             axum::serve(listener, router)
                 .with_graceful_shutdown(async move {
                     let _ = tokio::signal::ctrl_c().await;

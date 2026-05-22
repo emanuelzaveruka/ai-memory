@@ -41,59 +41,96 @@ pub fn run(_config: &Config, args: InstallMcpArgs) -> Result<()> {
     Ok(())
 }
 
+/// Render an `Authorization: Bearer <token>` header value if a token
+/// is set; returns `None` otherwise. Centralised so every renderer
+/// makes the same choice.
+fn bearer_header_value(args: &InstallMcpArgs) -> Option<String> {
+    args.auth_token.as_deref().map(|t| format!("Bearer {t}"))
+}
+
 fn render_claude_code(args: &InstallMcpArgs) -> Result<String> {
+    let bearer = bearer_header_value(args);
+    let cli_line = if let Some(b) = &bearer {
+        format!(
+            "claude mcp add --transport http {name} {url} \\\n    --header \"Authorization: {b}\"",
+            name = args.name,
+            url = args.server_url,
+            b = b,
+        )
+    } else {
+        format!(
+            "claude mcp add --transport http {name} {url}",
+            name = args.name,
+            url = args.server_url,
+        )
+    };
+    let mut entry = serde_json::Map::new();
+    entry.insert("type".into(), json!("http"));
+    entry.insert("url".into(), json!(args.server_url));
+    if let Some(b) = &bearer {
+        entry.insert("headers".into(), json!({"Authorization": b}));
+    }
+    let snippet = serde_json::to_string_pretty(&json!({
+        "mcpServers": { args.name.as_str(): entry }
+    }))?;
     Ok(format!(
         "# Claude Code — register the MCP server\n\
          #\n\
          # Recommended (one-shot CLI):\n\
-         claude mcp add --transport http {name} {url}\n\
+         {cli_line}\n\
          #\n\
          # Equivalent JSON if you'd rather edit settings directly\n\
          # (~/.claude/settings.json):\n\
-         {snippet}\n",
-        name = args.name,
-        url = args.server_url,
-        snippet = serde_json::to_string_pretty(&json!({
-            "mcpServers": {
-                args.name.as_str(): {
-                    "type": "http",
-                    "url": args.server_url,
-                }
-            }
-        }))?,
+         {snippet}\n"
     ))
 }
 
 fn render_codex(args: &InstallMcpArgs) -> String {
     // Codex uses TOML, not JSON. Hand-render the snippet so the
     // table headers stay deterministic.
-    format!(
+    let mut out = format!(
         "# Codex CLI — append to ~/.codex/config.toml\n\
          #\n\
          [mcp_servers.{name}]\n\
          url = \"{url}\"\n",
         name = args.name,
         url = args.server_url,
-    )
+    );
+    if let Some(b) = bearer_header_value(args) {
+        out.push_str(&format!(
+            "\n# Codex passes [mcp_servers.<name>.headers] verbatim:\n\
+             [mcp_servers.{name}.headers]\n\
+             Authorization = \"{b}\"\n",
+            name = args.name,
+            b = b,
+        ));
+    }
+    out
 }
 
 fn render_opencode(args: &InstallMcpArgs) -> Result<String> {
+    let mut entry = serde_json::Map::new();
+    entry.insert("type".into(), json!("remote"));
+    entry.insert("url".into(), json!(args.server_url));
+    entry.insert("enabled".into(), json!(true));
+    if let Some(b) = bearer_header_value(args) {
+        entry.insert("headers".into(), json!({"Authorization": b}));
+    }
     Ok(format!(
         "# OpenCode — add to ~/.config/opencode/opencode.json under \"mcp\":\n\
          {snippet}\n",
         snippet = serde_json::to_string_pretty(&json!({
-            "mcp": {
-                args.name.as_str(): {
-                    "type": "remote",
-                    "url": args.server_url,
-                    "enabled": true,
-                }
-            }
+            "mcp": { args.name.as_str(): entry }
         }))?,
     ))
 }
 
 fn render_cursor(args: &InstallMcpArgs) -> Result<String> {
+    let mut entry = serde_json::Map::new();
+    entry.insert("url".into(), json!(args.server_url));
+    if let Some(b) = bearer_header_value(args) {
+        entry.insert("headers".into(), json!({"Authorization": b}));
+    }
     Ok(format!(
         "# Cursor — write to one of:\n\
          #   - ~/.cursor/mcp.json   (global, all projects)\n\
@@ -105,16 +142,19 @@ fn render_cursor(args: &InstallMcpArgs) -> Result<String> {
          # is still flaky.\n\
          {snippet}\n",
         snippet = serde_json::to_string_pretty(&json!({
-            "mcpServers": {
-                args.name.as_str(): {
-                    "url": args.server_url,
-                }
-            }
+            "mcpServers": { args.name.as_str(): entry }
         }))?,
     ))
 }
 
 fn render_claude_desktop(args: &InstallMcpArgs) -> Result<String> {
+    // mcp-remote's --header flag is how we plumb the Authorization
+    // through Claude Desktop's stdio-only config.
+    let mut cmd_args = vec![json!("-y"), json!("mcp-remote"), json!(args.server_url)];
+    if let Some(b) = bearer_header_value(args) {
+        cmd_args.push(json!("--header"));
+        cmd_args.push(json!(format!("Authorization: {b}")));
+    }
     Ok(format!(
         "# Claude Desktop — write to claude_desktop_config.json:\n\
          #   - macOS:    ~/Library/Application Support/Claude/claude_desktop_config.json\n\
@@ -132,7 +172,7 @@ fn render_claude_desktop(args: &InstallMcpArgs) -> Result<String> {
             "mcpServers": {
                 args.name.as_str(): {
                     "command": "npx",
-                    "args": ["-y", "mcp-remote", args.server_url.as_str()],
+                    "args": cmd_args,
                 }
             }
         }))?,
@@ -140,6 +180,12 @@ fn render_claude_desktop(args: &InstallMcpArgs) -> Result<String> {
 }
 
 fn render_gemini_cli(args: &InstallMcpArgs) -> Result<String> {
+    let mut entry = serde_json::Map::new();
+    entry.insert("httpUrl".into(), json!(args.server_url));
+    entry.insert("timeout".into(), json!(5000));
+    if let Some(b) = bearer_header_value(args) {
+        entry.insert("headers".into(), json!({"Authorization": b}));
+    }
     Ok(format!(
         "# Gemini CLI — merge into ~/.gemini/settings.json:\n\
          #\n\
@@ -147,17 +193,18 @@ fn render_gemini_cli(args: &InstallMcpArgs) -> Result<String> {
          # endpoints. The `timeout` is in milliseconds.\n\
          {snippet}\n",
         snippet = serde_json::to_string_pretty(&json!({
-            "mcpServers": {
-                args.name.as_str(): {
-                    "httpUrl": args.server_url,
-                    "timeout": 5000,
-                }
-            }
+            "mcpServers": { args.name.as_str(): entry }
         }))?,
     ))
 }
 
 fn render_openclaw(args: &InstallMcpArgs) -> Result<String> {
+    let mut entry = serde_json::Map::new();
+    entry.insert("url".into(), json!(args.server_url));
+    entry.insert("transport".into(), json!("streamable-http"));
+    if let Some(b) = bearer_header_value(args) {
+        entry.insert("headers".into(), json!({"Authorization": b}));
+    }
     Ok(format!(
         "# OpenClaw — merge into ~/.openclaw/config.json:\n\
          #\n\
@@ -165,14 +212,7 @@ fn render_openclaw(args: &InstallMcpArgs) -> Result<String> {
          # \"transport\": \"streamable-http\" for ai-memory's HTTP endpoint.\n\
          {snippet}\n",
         snippet = serde_json::to_string_pretty(&json!({
-            "mcp": {
-                "servers": {
-                    args.name.as_str(): {
-                        "url": args.server_url,
-                        "transport": "streamable-http",
-                    }
-                }
-            }
+            "mcp": { "servers": { args.name.as_str(): entry } }
         }))?,
     ))
 }
@@ -208,6 +248,52 @@ mod tests {
             client,
             server_url: "http://127.0.0.1:49374/mcp".into(),
             name: "ai-memory".into(),
+            auth_token: None,
+        }
+    }
+
+    fn args_with_token(client: McpClient) -> InstallMcpArgs {
+        InstallMcpArgs {
+            client,
+            server_url: "http://127.0.0.1:49374/mcp".into(),
+            name: "ai-memory".into(),
+            auth_token: Some("test-token-deadbeef".into()),
+        }
+    }
+
+    fn render_with_token(client: McpClient) -> String {
+        let args = args_with_token(client);
+        match args.client {
+            McpClient::ClaudeCode => render_claude_code(&args).unwrap(),
+            McpClient::Codex => render_codex(&args),
+            McpClient::OpenCode => render_opencode(&args).unwrap(),
+            McpClient::Cursor => render_cursor(&args).unwrap(),
+            McpClient::ClaudeDesktop => render_claude_desktop(&args).unwrap(),
+            McpClient::GeminiCli => render_gemini_cli(&args).unwrap(),
+            McpClient::Openclaw => render_openclaw(&args).unwrap(),
+            McpClient::Pi => render_pi_explanation(&args),
+        }
+    }
+
+    /// With `--auth-token` set, every non-pi renderer must embed the
+    /// Bearer header in its output. pi prints the same non-support
+    /// message regardless.
+    #[test]
+    fn auth_token_threaded_into_every_client() {
+        for client in [
+            McpClient::ClaudeCode,
+            McpClient::Codex,
+            McpClient::OpenCode,
+            McpClient::Cursor,
+            McpClient::ClaudeDesktop,
+            McpClient::GeminiCli,
+            McpClient::Openclaw,
+        ] {
+            let out = render_with_token(client);
+            assert!(
+                out.contains("Bearer test-token-deadbeef"),
+                "client {client:?} did not embed the bearer token:\n{out}"
+            );
         }
     }
 

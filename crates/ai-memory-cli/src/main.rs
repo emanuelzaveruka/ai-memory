@@ -13,6 +13,7 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::info;
 
+mod auth;
 mod cli;
 mod commands;
 mod config;
@@ -53,5 +54,6 @@ async fn main() -> Result<()> {
         Command::ForgetSweep(args) => commands::forget_sweep::run(&config, args).await,
         Command::Lint(args) => commands::lint::run(&config, args).await,
         Command::Embed(args) => commands::embed::run(&config, args).await,
+        Command::GenerateAuthToken(args) => commands::generate_auth_token::run(&config, args),
     }
 }

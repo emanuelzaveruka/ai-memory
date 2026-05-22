@@ -61,6 +61,52 @@ ssh "$SERVER" "docker inspect --format='{{.State.Health.Status}}' ai-memory"
 # Expect: healthy
 ```
 
+## Security — bearer-token auth + encrypted transport
+
+The default `docker-compose.prod.yml.example` binds to `0.0.0.0:49374`
+so the LAN can reach the MCP endpoint. **A LAN-bound server with no
+auth lets anyone on the network call destructive MCP tools** (delete
+all pages, inject fake observations, drain your LLM budget). ai-memory
+ships a built-in bearer-token check; turn it on before the first deploy.
+
+```bash
+# 1. Generate a token (32 bytes / 64 hex chars).
+ai-memory generate-auth-token >> docker/.env.production
+$EDITOR docker/.env.production    # prefix the new line with AI_MEMORY_AUTH_TOKEN=
+
+# 2. Sync to the homelab + restart.
+scp docker/.env.production "$SERVER:$DEPLOY_DIR/.env.production"
+ssh "$SERVER" "cd $DEPLOY_DIR && docker compose up -d"
+```
+
+The startup log will now show `auth=true`. Verify from the laptop:
+
+```bash
+curl -sI http://homelab:49374/handoff             # → HTTP/1.1 401 Unauthorized
+curl -sI http://homelab:49374/handoff \
+     -H "Authorization: Bearer $TOKEN"            # → HTTP/1.1 200 OK
+```
+
+**Then update every MCP client** to send the same token. `ai-memory
+install-mcp --client <name> --auth-token <token>` prints the exact
+snippet per client (Claude Code, Codex, OpenCode, Cursor, Claude
+Desktop, Gemini CLI, OpenClaw). The agent CLI sends an
+`Authorization: Bearer <token>` header on every call; ai-memory's
+middleware validates with a constant-time comparison.
+
+**Encrypted transport.** Plain HTTP on the LAN means anyone with a
+packet capture on the network can read the bearer token and the wiki
+content in transit. Two pragmatic ways to add TLS:
+
+| Option | When it fits |
+|---|---|
+| **Front with cloudflared** (your existing homelab tunnel) | You want to access ai-memory from outside the LAN too. cloudflared terminates TLS at Cloudflare's edge and tunnels to the container over HTTP. The bearer token still applies; Cloudflare provides the encryption + DDoS shield. Configure a new `--hostname ai-memory.your-domain.tld --url http://localhost:49374` route on the existing cloudflared instance. |
+| **Caddy reverse proxy** in a sibling container | You want LAN-only TLS without public DNS. Caddy auto-issues a self-signed cert with a tofu prompt the first time each client connects. Mount your homelab's CA cert into the container running each MCP client. |
+
+For most homelab use cases the bearer token alone over plain HTTP on
+a trusted LAN is acceptable. The token is what stops the LAN
+neighbour; TLS is what stops a packet-capture-with-a-laptop-on-the-WiFi.
+
 ## Routine deploys
 
 After the first-time setup, every subsequent deploy is just:

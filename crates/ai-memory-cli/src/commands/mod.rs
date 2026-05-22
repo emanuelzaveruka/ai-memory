@@ -4,6 +4,7 @@ pub mod backup;
 pub mod commit;
 pub mod embed;
 pub mod forget_sweep;
+pub mod generate_auth_token;
 pub mod init;
 pub mod install_hooks;
 pub mod install_mcp;

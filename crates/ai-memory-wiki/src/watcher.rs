@@ -203,6 +203,15 @@ fn walk_markdown(root: &Path) -> WikiResult<Vec<PagePath>> {
             let entry = entry?;
             let path = entry.path();
             let ft = entry.file_type()?;
+            // Skip symlinks entirely. An attacker with write access to
+            // the wiki/ dir could otherwise plant a symlink to /etc/hosts,
+            // /home/user/.ssh/id_ed25519 etc. and have the watcher
+            // index the target's content. The sanitiser would still
+            // scrub credentials, but we'd be reading files we
+            // shouldn't be reading. (Audit critical #3.)
+            if ft.is_symlink() {
+                continue;
+            }
             if ft.is_dir() {
                 stack.push(path);
             } else if ft.is_file()
@@ -313,5 +322,35 @@ mod tests {
         assert!(is_tempfile(p));
         let q = Path::new("/some/dir/normal.md");
         assert!(!is_tempfile(q));
+    }
+
+    /// Defence: an attacker who can write to wiki/ shouldn't be able
+    /// to make the watcher index arbitrary files via symlinks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn walk_markdown_skips_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let wiki_root = tmp.path().join("wiki");
+        std::fs::create_dir_all(&wiki_root).unwrap();
+
+        // A real file (should be picked up).
+        std::fs::write(wiki_root.join("real.md"), "real content\n").unwrap();
+
+        // A "secret" file outside the wiki root.
+        let secret = tmp.path().join("secret.md");
+        std::fs::write(&secret, "this is sensitive\n").unwrap();
+
+        // Plant a symlink inside wiki/ pointing at the outside file.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, wiki_root.join("symlinked.md")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&secret, wiki_root.join("symlinked.md")).unwrap();
+
+        let found = walk_markdown(&wiki_root).unwrap();
+        let names: Vec<_> = found.iter().map(|p| p.as_str().to_string()).collect();
+        assert!(names.contains(&"real.md".to_string()), "real file present");
+        assert!(
+            !names.contains(&"symlinked.md".to_string()),
+            "symlink to outside file must be skipped; got: {names:?}"
+        );
     }
 }

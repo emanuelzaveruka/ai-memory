@@ -21,17 +21,31 @@ use crate::config::Config;
 /// Returns an error if the hook script directory cannot be located.
 pub fn run(_config: &Config, args: InstallHooksArgs) -> Result<()> {
     let hooks_dir = resolve_hooks_dir(args.hooks_dir.as_deref(), args.agent)?;
+    let auth = args.auth_token.as_deref();
     match args.agent {
-        AgentChoice::ClaudeCode => render_claude_code(&hooks_dir, &args.server_url),
-        AgentChoice::Codex => render_agent("codex", &hooks_dir, &args.server_url),
-        AgentChoice::OpenCode => render_agent("opencode", &hooks_dir, &args.server_url),
+        AgentChoice::ClaudeCode => render_claude_code(&hooks_dir, &args.server_url, auth),
+        AgentChoice::Codex => render_agent("codex", &hooks_dir, &args.server_url, auth),
+        AgentChoice::OpenCode => render_agent("opencode", &hooks_dir, &args.server_url, auth),
     }
 }
 
-fn render_agent(label: &str, hooks_dir: &Path, server_url: &str) -> Result<()> {
+fn render_agent(
+    label: &str,
+    hooks_dir: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+) -> Result<()> {
     println!("# {label} hook scripts (manual install — wire each to the matching event)");
     println!("# Hook scripts: {}", hooks_dir.display());
     println!("# AI-memory server URL: {server_url}");
+    if auth_token.is_some() {
+        println!("# Auth: set AI_MEMORY_AUTH_TOKEN in each hook's environment to the");
+        println!("#       value passed via --auth-token (omitted from this printout).");
+    } else {
+        println!("# Auth: server requires no bearer token. To require one, generate a");
+        println!("#       token with `ai-memory generate-auth-token` and pass it via");
+        println!("#       --auth-token here AND set AI_MEMORY_AUTH_TOKEN on the server.");
+    }
     println!();
     for entry in std::fs::read_dir(hooks_dir)? {
         let entry = entry?;
@@ -88,7 +102,7 @@ fn repo_root_guess() -> Option<PathBuf> {
         .and_then(|p| p.parent()?.parent()?.parent().map(Path::to_path_buf))
 }
 
-fn render_claude_code(hooks_dir: &Path, server_url: &str) -> Result<()> {
+fn render_claude_code(hooks_dir: &Path, server_url: &str, auth_token: Option<&str>) -> Result<()> {
     let scripts: [(&str, &str); 7] = [
         ("SessionStart", "session-start.sh"),
         ("UserPromptSubmit", "user-prompt-submit.sh"),
@@ -105,11 +119,26 @@ fn render_claude_code(hooks_dir: &Path, server_url: &str) -> Result<()> {
         if !abs.exists() {
             anyhow::bail!("missing hook script: {}", abs.display());
         }
+        // The env block is passed to the hook command by Claude Code.
+        // We always include AI_MEMORY_HOOK_URL; when an auth token is
+        // configured, we also include AI_MEMORY_AUTH_TOKEN so the
+        // hook scripts can forward it as `Authorization: Bearer …`.
+        let mut env = serde_json::Map::new();
+        env.insert(
+            "AI_MEMORY_HOOK_URL".into(),
+            serde_json::Value::String(server_url.to_string()),
+        );
+        if let Some(t) = auth_token {
+            env.insert(
+                "AI_MEMORY_AUTH_TOKEN".into(),
+                serde_json::Value::String(t.to_string()),
+            );
+        }
         hooks_block.insert(
             event.into(),
             json!([{
                 "command": abs.to_string_lossy().into_owned(),
-                "env": { "AI_MEMORY_HOOK_URL": server_url },
+                "env": env,
             }]),
         );
     }
@@ -120,6 +149,10 @@ fn render_claude_code(hooks_dir: &Path, server_url: &str) -> Result<()> {
     println!("# Claude Code hook config — merge into ~/.claude/settings.json");
     println!("# Hook scripts: {}", hooks_dir.display());
     println!("# AI-memory server URL: {server_url}");
+    if auth_token.is_some() {
+        println!("# Auth: AI_MEMORY_AUTH_TOKEN embedded in each hook's env block below.");
+        println!("#       Treat ~/.claude/settings.json as sensitive (chmod 600).");
+    }
     println!();
     println!("{serialized}");
     Ok(())

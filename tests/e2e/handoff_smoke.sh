@@ -107,6 +107,12 @@ EOF
 # Canary that MUST be redacted end-to-end.
 CANARY_KEY="sk-canary-LEAK_ME_PLEASE_e2e_smoketest_xxxxxxxxxxxx"
 
+# Generated bearer token for this test run. The test starts ai-memory
+# with AI_MEMORY_AUTH_TOKEN set, then exercises both the unauth (must
+# 401) and auth (must 200) paths.
+AUTH_TOKEN="testtoken-$(date +%s)-$(printf '%08x' $RANDOM$RANDOM)"
+AUTH_HEADER="Authorization: Bearer $AUTH_TOKEN"
+
 # --------------------------------------------------------------------
 # Gemini helper
 # --------------------------------------------------------------------
@@ -144,7 +150,8 @@ AI_MEMORY="$REPO_ROOT/target/release/ai-memory"
 step "Initialising ai-memory data dir at $AI_MEMORY_DATA_DIR"
 "$AI_MEMORY" init >>"$LOG_FILE" 2>&1
 
-step "Starting ai-memory server on $SERVER_URL"
+step "Starting ai-memory server on $SERVER_URL (auth-required)"
+AI_MEMORY_AUTH_TOKEN="$AUTH_TOKEN" \
 "$AI_MEMORY" serve \
     --transport http --bind "127.0.0.1:$PORT" \
     --workspace e2e-test --project blog \
@@ -156,11 +163,46 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     tail -30 "$LOG_FILE" >&2
     exit 1
 fi
-# Verify it's actually listening before continuing.
+# Verify it's actually listening before continuing. /mcp without auth
+# returns 401, which is fine — it proves the server is up AND that
+# the auth layer is wired in. (Without auth we'd see 405 GET-not-allowed.)
 for _ in 1 2 3 4 5; do
-    curl -sf -o /dev/null --max-time 2 "$SERVER_URL/mcp" && break
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "$SERVER_URL/mcp" 2>/dev/null || echo 000)
+    [[ "$code" == "401" || "$code" == "405" || "$code" == "200" ]] && break
     sleep 1
 done
+
+# Auth-path assertions — the server must reject unauthenticated calls
+# and accept authenticated ones. We check this BEFORE the main flow
+# so a misconfigured server fails fast with a clear signal.
+step "Auth probe: GET /handoff without token must 401"
+unauth_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+    "$SERVER_URL/handoff?agent=open-code" 2>/dev/null || echo 000)
+if [[ "$unauth_code" != "401" ]]; then
+    echo "FAIL: expected 401 without auth, got $unauth_code" >&2
+    exit 1
+fi
+echo "  PASS: unauth → 401"
+
+step "Auth probe: GET /handoff with wrong token must 401"
+wrong_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+    -H "Authorization: Bearer not-the-right-one" \
+    "$SERVER_URL/handoff?agent=open-code" 2>/dev/null || echo 000)
+if [[ "$wrong_code" != "401" ]]; then
+    echo "FAIL: expected 401 with wrong token, got $wrong_code" >&2
+    exit 1
+fi
+echo "  PASS: wrong-token → 401"
+
+step "Auth probe: GET /handoff with right token must NOT be 401"
+right_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+    -H "$AUTH_HEADER" \
+    "$SERVER_URL/handoff?agent=open-code" 2>/dev/null || echo 000)
+if [[ "$right_code" == "401" ]]; then
+    echo "FAIL: right token also rejected, got $right_code" >&2
+    exit 1
+fi
+echo "  PASS: right-token → $right_code (not 401)"
 
 # --------------------------------------------------------------------
 # Session 1 — model A. Plant the plan + the canary.
@@ -173,6 +215,7 @@ echo "{\"session_id\":\"$SESSION_ID_1\",\"cwd\":\"$TEST_DIR/blog\",\"model\":\"$
     | curl -sS --max-time 3 \
         -X POST "$SERVER_URL/hook?event=session-start&agent=open-code" \
         -H "Content-Type: application/json" \
+        -H "$AUTH_HEADER" \
         --data-binary @- >>"$LOG_FILE" 2>&1
 
 step "Session 1: invoke model A with the plan + canary"
@@ -199,6 +242,7 @@ echo "{\"session_id\":\"$SESSION_ID_1\",\"prompt\":$(jq -Rs <<<"$S1_PROMPT")}" \
     | curl -sS --max-time 3 \
         -X POST "$SERVER_URL/hook?event=user-prompt&agent=open-code" \
         -H "Content-Type: application/json" \
+        -H "$AUTH_HEADER" \
         --data-binary @- >>"$LOG_FILE" 2>&1
 
 # Synthetic "tool use" observation so the handoff's "next steps"
@@ -208,6 +252,7 @@ for tool in "Read" "Edit" "Write"; do
         | curl -sS --max-time 2 \
             -X POST "$SERVER_URL/hook?event=post-tool-use&agent=open-code" \
             -H "Content-Type: application/json" \
+            -H "$AUTH_HEADER" \
             --data-binary @- >>"$LOG_FILE" 2>&1
 done
 
@@ -215,6 +260,7 @@ echo "{\"session_id\":\"$SESSION_ID_1\",\"cwd\":\"$TEST_DIR/blog\"}" \
     | curl -sS --max-time 10 \
         -X POST "$SERVER_URL/hook?event=session-end&agent=open-code" \
         -H "Content-Type: application/json" \
+        -H "$AUTH_HEADER" \
         --data-binary @- >>"$LOG_FILE" 2>&1
 
 # Server work is async (writer actor + auto-commit). Give it a beat.
@@ -224,8 +270,8 @@ sleep 2
 # Probe: handoff exists; canary already scrubbed at this point
 # --------------------------------------------------------------------
 
-step "Probe: fetch handoff via GET /handoff"
-HANDOFF_MD="$(curl -sS --max-time 5 "$SERVER_URL/handoff?agent=open-code")"
+step "Probe: fetch handoff via GET /handoff (authed)"
+HANDOFF_MD="$(curl -sS --max-time 5 -H "$AUTH_HEADER" "$SERVER_URL/handoff?agent=open-code")"
 echo "$HANDOFF_MD" >"$TEST_DIR/handoff.md"
 echo "--- handoff body ---"
 echo "$HANDOFF_MD"
@@ -243,6 +289,7 @@ echo "{\"session_id\":\"$SESSION_ID_2\",\"cwd\":\"$TEST_DIR/blog\",\"model\":\"$
     | curl -sS --max-time 3 \
         -X POST "$SERVER_URL/hook?event=session-start&agent=open-code" \
         -H "Content-Type: application/json" \
+        -H "$AUTH_HEADER" \
         --data-binary @- >>"$LOG_FILE" 2>&1
 
 step "Session 2: invoke model B, with the handoff prepended"
