@@ -139,12 +139,15 @@ pub struct RenameProjectArgs {
 /// Arguments for `install-instructions`.
 #[derive(Debug, Args)]
 pub struct InstallInstructionsArgs {
-    /// Markdown file to write into. Defaults to `$PWD/CLAUDE.md`.
-    /// Use `--target AGENTS.md` for non-Claude agents, or any other
-    /// path for project-rules files (`.cursor/rules`,
-    /// `.windsurfrules`, etc.).
-    #[arg(long, default_value = "CLAUDE.md")]
-    pub target: PathBuf,
+    /// Markdown file to write into. When omitted, the command picks
+    /// whichever of `CLAUDE.md` or `AGENTS.md` already exists in
+    /// $PWD; if both exist it writes to both; if neither exists it
+    /// creates `CLAUDE.md` (Claude Code's convention) and prints a
+    /// hint that Codex / OpenCode / Cursor / Gemini users likely
+    /// want `--target AGENTS.md` instead. Pass `--target` explicitly
+    /// to override the auto-detection.
+    #[arg(long)]
+    pub target: Option<PathBuf>,
     /// Print the snippet to stdout instead of mutating the file.
     /// The default IS mutation here (the print form is also
     /// available without this command — copy the block from the

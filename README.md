@@ -459,23 +459,66 @@ the agent sees a suggestion:
 ai-memory never edits your `CLAUDE.md` itself — the suggestion is
 the whole UX. You copy what's useful, ignore what isn't.
 
+### When the agent reaches for memory
+
+Hooks handle *capture* (every prompt + tool call + session boundary)
+and *handoff resume* (SessionStart auto-fetches pending handoffs)
+without you typing anything. **Proactive querying** — the agent
+reaching into the wiki on its own — depends on the agent knowing
+*when* to call which tool. Concrete patterns once the routing
+snippet is installed (see "Nudge the agent" below):
+
+| You say… | Agent calls… | Effect |
+|---|---|---|
+| "Have we discussed X?" / "search memory for Y" | `memory_query` | FTS5 over consolidated wiki pages; returns ranked snippets with `<mark>`-highlighted hits. |
+| (before proposing architecture) implicit | `memory_query` | The routing snippet tells the agent to check prior decisions / gotchas before proposing anything, so you don't get contradicted-by-its-own-history suggestions. |
+| "Catch me up" / "I've been away" | `memory_explore` | Prose digest. Verbosity auto-scales to time-since-last-activity: < 1 h → one line, > 30 days → full catchup. |
+| "Where did we leave off?" | (handoff already prepended) | SessionStart hook already prepended the handoff before your first prompt; the agent just reads from that block. |
+| "Save context for the next session" | `memory_handoff_begin` | Writes a terse handoff with `open_questions` + `next_steps` for whichever agent opens this project next. |
+| "Consolidate this session" | `memory_consolidate` | Manual trigger of what session-end normally does automatically (compile observations into wiki pages). |
+| "Audit the wiki" / "any contradictions?" | `memory_lint` | Runs the stale-page / contradiction / rule-suggestion pass. |
+| "How big is the wiki?" / "stats?" | `memory_status`, `memory_briefing` | Counts + recent activity windows. |
+
+The mapping is in the [routing snippet](#nudge-the-agent-to-use-memory-proactively)
+the next section installs.
+
 ### Nudge the agent to *use* memory proactively
 
-Lifecycle hooks handle *capture* and *handoff resume* without you
-typing anything. Proactive *querying* still depends on the agent
-thinking to call `memory_query`. For projects where memory matters,
-one command installs the recommended snippet into your `CLAUDE.md`:
+The capture side works automatically. For the *query* side, the
+agent needs a routing table in the project's rules file
+(`CLAUDE.md` for Claude Code; `AGENTS.md` for Codex / OpenCode /
+Cursor / Gemini CLI). Two ways to install it — pick whichever's
+easier in the moment:
+
+**From the agent** (no terminal needed):
+
+> "Install ai-memory routing into this project."
+
+The agent calls the `memory_install_self_routing` MCP tool, gets
+back the canonical snippet + a per-agent filename map, then uses
+its own Write/Edit tool to land the block in the right rules file
+(Claude Code → CLAUDE.md, everyone else → AGENTS.md). Idempotent:
+the block is wrapped in `<!-- ai-memory:start -->` /
+`<!-- ai-memory:end -->` markers so the agent replaces in place on
+re-runs.
+
+**From the terminal**:
 
 ```bash
-ai-memory install-instructions --target ./CLAUDE.md
+ai-memory install-instructions          # auto-detects CLAUDE.md vs AGENTS.md
+ai-memory install-instructions --target AGENTS.md   # force a specific file
+ai-memory install-instructions --print              # preview without writing
 ```
 
-The block is wrapped in `<!-- ai-memory:start -->` /
-`<!-- ai-memory:end -->` markers so re-running picks up an updated
-snippet without duplicating. Use `--target ./AGENTS.md` for
-non-Claude agents, or any other path for project-rules files
-(`.cursor/rules`, `.windsurfrules`, etc.). Append `--print` to
-preview without writing.
+The CLI's auto-detect: if `$PWD/CLAUDE.md` exists, extend that;
+if `$PWD/AGENTS.md` exists, extend that; if both exist, write to
+both (multi-agent project — keep both files in sync); if neither
+exists, create `CLAUDE.md` and print a hint about `--target
+AGENTS.md` for non-Claude agents.
+
+Both paths produce the same block. Both replace existing markered
+blocks in place rather than duplicating, so you can re-run safely
+whenever the snippet evolves (e.g. when a new MCP tool ships).
 
 ## LLM provider — recommended defaults
 

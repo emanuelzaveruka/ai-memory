@@ -13,74 +13,16 @@
 //! file. Idempotent via HTML-comment markers so re-running picks up
 //! whatever the snippet evolves into without duplicating the block.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::cli::InstallInstructionsArgs;
 use crate::commands::apply_shared::{ApplyOutcome, apply_atomic};
 use crate::config::Config;
 
-/// Marker that opens our managed section. Don't change the wording —
-/// the closing marker, the install-instructions tooling, and any
-/// future "ai-memory uninstall-instructions" all key off this exact
-/// string.
-const MARKER_START: &str = "<!-- ai-memory:start -->";
-const MARKER_END: &str = "<!-- ai-memory:end -->";
-
-/// The canonical snippet body. Lives in code so `install-instructions`
-/// always writes the current recommended copy.
-const SNIPPET_BODY: &str = r#"
-## Long-term memory (ai-memory)
-
-This project uses [ai-memory](https://github.com/akitaonrails/ai-memory)
-for cross-session continuity. **Lifecycle hooks already capture every
-prompt + tool call automatically.** You never need to manually write
-notes; the SessionStart hook auto-fetches pending handoffs and the
-SessionEnd hook auto-consolidates. Just *use* the read tools.
-
-### When to reach for each tool
-
-The user can express any of the intents below in plain English —
-match the intent to the tool. They do not need to name the tool.
-
-| User says / situation | Tool |
-|---|---|
-| "have we discussed X?" / "search memory for Y" / before proposing architecture | `memory_query` |
-| "what's been going on" / "show recent activity" (light) | `memory_recent` |
-| "is ai-memory healthy?" / "how big is the wiki?" | `memory_status` |
-| "give me the stats" / structured snapshot for the agent to consume | `memory_briefing` |
-| "catch me up" / "I've been away" / "what's important right now?" / open-ended exploration | `memory_explore` |
-| "where did we leave off?" — and you see a `📥 ai-memory: pending handoff` block in your context | already done — answer from that block; do NOT re-call `memory_handoff_accept` |
-| "where did we leave off?" — and no such block is visible | `memory_handoff_accept` (rare; the SessionStart hook usually got there first) |
-| "save context for the next session" / wrapping up | `memory_handoff_begin` (terse summary; put detail in `open_questions` + `next_steps` bullets) |
-| "consolidate this session" / "compile what we learned" (usually automatic) | `memory_consolidate` |
-| "audit the wiki" / "find contradictions" / "what rules should we add?" | `memory_lint` |
-| "prune old pages" / "memory cleanup" | `memory_forget_sweep` |
-
-`memory_explore` is the right default for the "I want to know what's
-going on" use case — it returns a prose digest whose verbosity
-scales automatically to how long it's been since the last activity
-(< 1 h → one line; > 30 days → full catchup).
-
-### When you write a project rule, write it here
-
-If you're about to write a durable project rule ("always X", "never
-Y", "all PRs must …"), this file (CLAUDE.md / AGENTS.md) is where
-the rule belongs. ai-memory's lint pass surfaces the same hint
-automatically when a `kind: rule` page lands in `_rules/`.
-
-### Refreshing this snippet
-
-This block is maintained by ai-memory. To re-sync it with the
-latest binary's recommended copy (e.g. when new tools ship), run:
-
-```
-ai-memory install-instructions
-```
-
-It's idempotent: re-runs replace the block bracketed by
-`<!-- ai-memory:start -->` / `<!-- ai-memory:end -->` markers
-without disturbing the rest of the file.
-"#;
+// Markers + the snippet body live in `ai_memory_core::routing_snippet`
+// so the `memory_install_self_routing` MCP tool can return the same
+// block this subcommand writes. Single source of truth.
+use ai_memory_core::{MARKER_END, MARKER_START, full_block};
 
 /// Run the `install-instructions` subcommand.
 ///
@@ -88,29 +30,74 @@ without disturbing the rest of the file.
 /// Returns an error if the target path can't be written or if the
 /// existing file isn't valid UTF-8.
 pub fn run(_config: &Config, args: InstallInstructionsArgs) -> Result<()> {
-    let block = format!("{MARKER_START}\n{}\n{MARKER_END}\n", SNIPPET_BODY.trim());
+    let block = full_block();
+    let targets = resolve_targets(args.target.as_ref())?;
 
     if args.print {
-        // Print mode: show the block + the target path, no mutation.
-        println!("# Would write into: {}\n", args.target.display());
-        println!("{block}");
+        for t in &targets {
+            println!("# Would write into: {}\n", t.display());
+            println!("{block}");
+        }
         return Ok(());
     }
 
-    let outcome = apply_atomic(&args.target, |existing| {
-        Ok(merge_instructions_block(existing, &block))
-    })?;
-    println!(
-        "✓ {} {} ({})",
-        outcome.verb(),
-        args.target.display(),
-        match outcome {
-            ApplyOutcome::Created => "new file",
-            ApplyOutcome::Updated => "backup written next to it",
-            ApplyOutcome::NoOp => "already up to date",
-        }
-    );
+    for target in &targets {
+        let outcome = apply_atomic(target, |existing| {
+            Ok(merge_instructions_block(existing, &block))
+        })?;
+        println!(
+            "✓ {} {} ({})",
+            outcome.verb(),
+            target.display(),
+            match outcome {
+                ApplyOutcome::Created => "new file",
+                ApplyOutcome::Updated => "backup written next to it",
+                ApplyOutcome::NoOp => "already up to date",
+            }
+        );
+    }
     Ok(())
+}
+
+/// Decide which file(s) the snippet should land in.
+///
+/// Precedence:
+/// 1. `--target` passed explicitly → use exactly that path (one file).
+/// 2. Both `CLAUDE.md` and `AGENTS.md` exist in `$PWD` → write to both
+///    (a project that's set up for multiple agent CLIs deserves the
+///    snippet in each convention).
+/// 3. Only `CLAUDE.md` exists → write to it.
+/// 4. Only `AGENTS.md` exists → write to it.
+/// 5. Neither exists → default to `CLAUDE.md` AND print a hint about
+///    `--target AGENTS.md` for Codex / OpenCode / Cursor / Gemini.
+///
+/// The auto-pick exists because Claude Code uses CLAUDE.md while
+/// every other supported agent (Codex, OpenCode, Cursor, Gemini CLI)
+/// converged on AGENTS.md. The heuristic "extend whatever's already
+/// there" matches the user's intent better than a hard-coded default.
+fn resolve_targets(explicit: Option<&std::path::PathBuf>) -> Result<Vec<std::path::PathBuf>> {
+    if let Some(p) = explicit {
+        return Ok(vec![p.clone()]);
+    }
+    let cwd = std::env::current_dir().context("getting CWD for install-instructions target")?;
+    let claude_md = cwd.join("CLAUDE.md");
+    let agents_md = cwd.join("AGENTS.md");
+    let has_claude = claude_md.exists();
+    let has_agents = agents_md.exists();
+    match (has_claude, has_agents) {
+        (true, true) => Ok(vec![claude_md, agents_md]),
+        (true, false) => Ok(vec![claude_md]),
+        (false, true) => Ok(vec![agents_md]),
+        (false, false) => {
+            eprintln!(
+                "note: neither CLAUDE.md nor AGENTS.md exists in {}; \
+                 creating CLAUDE.md. If you use Codex / OpenCode / \
+                 Cursor / Gemini CLI, re-run with `--target AGENTS.md`.",
+                cwd.display()
+            );
+            Ok(vec![claude_md])
+        }
+    }
 }
 
 /// Idempotent merge: when the markers exist, replace everything

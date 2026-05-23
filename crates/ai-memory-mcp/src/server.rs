@@ -58,11 +58,17 @@ for them:\n\
   pages, contradictions, or rule suggestions.\n\
 - `memory_forget_sweep` — when the user wants to prune old / cold \
   pages (idempotent, supports dry-run).\n\
+- `memory_install_self_routing` — when the user asks to 'install \
+  ai-memory routing into this project' or 'add ai-memory to \
+  CLAUDE.md / AGENTS.md'. Returns the canonical routing snippet + \
+  filename hints; you then use your own Write/Edit tool to land it \
+  in the right rules file (Claude Code → CLAUDE.md, Codex / \
+  OpenCode / Cursor / Gemini → AGENTS.md).\n\
 \n\
-To configure ai-memory's CLAUDE.md guidance for this project, run \
-`ai-memory install-instructions` from the CLI — that updates this \
-text in your project's CLAUDE.md / AGENTS.md so the model has the \
-same routing table in its system prompt.";
+The routing snippet this very text comes from can also be installed \
+into the project's CLAUDE.md / AGENTS.md so the guidance survives \
+across sessions. From the agent: ask 'install ai-memory routing'. \
+From the terminal: `ai-memory install-instructions`.";
 
 /// MCP server backed by the ai-memory store.
 #[derive(Clone)]
@@ -642,6 +648,48 @@ impl AiMemoryServer {
             "gap": gap,
             "briefing": snapshot,
         }))
+    }
+
+    /// Return the canonical CLAUDE.md / AGENTS.md routing block so the
+    /// agent can land it via its own Write/Edit tool. No server-side
+    /// state changes — the server can't reach the agent's host
+    /// filesystem.
+    #[tool(description = "Returns the canonical ai-memory routing snippet \
+        (the markdown block that tells the agent WHEN to call \
+        memory_query / memory_recent / memory_handoff_accept / etc.) \
+        plus filename hints per agent. Use when the user asks 'install \
+        ai-memory routing in this project' or 'add ai-memory to \
+        CLAUDE.md'. After calling, use your Write/Edit tool to: (a) \
+        pick the right rules file for yourself — Claude Code → \
+        CLAUDE.md, Codex / OpenCode / Cursor / Gemini CLI → AGENTS.md \
+        (or check `agent_filenames` in the response); (b) if the file \
+        already has a block bracketed by `<!-- ai-memory:start -->` / \
+        `<!-- ai-memory:end -->`, replace that block in place; \
+        otherwise append `markered_block` to the file with one blank \
+        line of separation. The block IS idempotent — re-runs replace \
+        in place. This tool is the source of truth for the snippet; \
+        do NOT improvise the routing table from memory.")]
+    async fn memory_install_self_routing(&self) -> Result<CallToolResult, McpError> {
+        let response = serde_json::json!({
+            "markered_block": ai_memory_core::full_block(),
+            "marker_start": ai_memory_core::MARKER_START,
+            "marker_end": ai_memory_core::MARKER_END,
+            "agent_filenames": {
+                "claude_code": "CLAUDE.md",
+                "codex": "AGENTS.md",
+                "opencode": "AGENTS.md",
+                "cursor": "AGENTS.md",
+                "gemini_cli": "AGENTS.md",
+                "default": "AGENTS.md"
+            },
+            "notes": [
+                "Pick the filename matching your own agent identity.",
+                "If the target file already contains <!-- ai-memory:start --> / <!-- ai-memory:end -->, replace ONLY that block in place; preserve every other line.",
+                "If the file doesn't exist, create it with just the markered_block (plus a trailing newline).",
+                "If the file exists but has no ai-memory markers, append the markered_block with one blank line of separation from existing content."
+            ]
+        });
+        ok_json(&response)
     }
 }
 

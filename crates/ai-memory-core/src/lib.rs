@@ -10,6 +10,7 @@ pub mod handoff;
 pub mod ids;
 pub mod observation;
 pub mod page;
+pub mod routing_snippet;
 pub mod sanitize;
 
 pub use error::{MemoryError, MemoryResult};
@@ -19,4 +20,5 @@ pub use ids::{
 };
 pub use observation::{NewObservation, NewSession, Observation, ObservationKind};
 pub use page::{NewPage, Page, Tier};
+pub use routing_snippet::{MARKER_END, MARKER_START, SNIPPET_BODY, full_block};
 pub use sanitize::{SanitizeConfig, Sanitized, Sanitizer};
