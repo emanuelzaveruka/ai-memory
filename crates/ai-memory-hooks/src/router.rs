@@ -464,6 +464,3 @@ const fn importance_for(event: HookEvent) -> u8 {
         HookEvent::Notification | HookEvent::Other => 3,
     }
 }
-
-#[allow(dead_code)]
-fn _agent_kind_marker(_k: AgentKind) {}

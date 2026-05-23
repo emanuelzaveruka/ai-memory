@@ -22,7 +22,7 @@ use serde_json::json;
 
 use crate::cli::{InstallMcpArgs, McpClient};
 use crate::commands::apply_shared::{ApplyOutcome, apply_atomic, mutate_json, mutate_toml};
-use crate::commands::render_shared::bearer_header_value as bearer_header_value_shared;
+use crate::commands::render_shared::bearer_header_value;
 use crate::config::Config;
 
 /// Run the `install-mcp` subcommand.
@@ -30,7 +30,11 @@ use crate::config::Config;
 /// # Errors
 /// Returns an error if JSON serialisation fails (should never happen
 /// for our handcrafted values).
-pub fn run(_config: &Config, args: InstallMcpArgs) -> Result<()> {
+pub fn run(config: &Config, args: InstallMcpArgs) -> Result<()> {
+    let args = InstallMcpArgs {
+        auth_token: args.auth_token.or_else(|| config.auth.bearer_token.clone()),
+        ..args
+    };
     if args.apply {
         if matches!(args.client, McpClient::Pi) {
             bail!(
@@ -176,7 +180,7 @@ fn apply_to_config_file(args: &InstallMcpArgs) -> Result<()> {
 /// Gemini CLI — they all accept `mcpServers.<name>` with `url` or
 /// `httpUrl` plus optional `headers`. Returns the per-client variant.
 fn build_mcp_entry(args: &InstallMcpArgs) -> Result<serde_json::Value> {
-    let bearer = bearer_header_value_shared(args.auth_token.as_deref());
+    let bearer = bearer_header_value(args.auth_token.as_deref());
     let mut entry = serde_json::Map::new();
     match args.client {
         McpClient::ClaudeCode => {
@@ -216,7 +220,7 @@ fn build_mcp_entry(args: &InstallMcpArgs) -> Result<serde_json::Value> {
 }
 
 fn build_mcp_entry_opencode(args: &InstallMcpArgs) -> Result<serde_json::Value> {
-    let bearer = bearer_header_value_shared(args.auth_token.as_deref());
+    let bearer = bearer_header_value(args.auth_token.as_deref());
     let mut entry = serde_json::Map::new();
     entry.insert("type".into(), json!("remote"));
     entry.insert("url".into(), json!(args.server_url));
@@ -228,7 +232,7 @@ fn build_mcp_entry_opencode(args: &InstallMcpArgs) -> Result<serde_json::Value> 
 }
 
 fn build_mcp_entry_openclaw(args: &InstallMcpArgs) -> Result<serde_json::Value> {
-    let bearer = bearer_header_value_shared(args.auth_token.as_deref());
+    let bearer = bearer_header_value(args.auth_token.as_deref());
     let mut entry = serde_json::Map::new();
     entry.insert("url".into(), json!(args.server_url));
     entry.insert("transport".into(), json!("streamable-http"));
@@ -236,14 +240,6 @@ fn build_mcp_entry_openclaw(args: &InstallMcpArgs) -> Result<serde_json::Value> 
         entry.insert("headers".into(), json!({"Authorization": b}));
     }
     Ok(serde_json::Value::Object(entry))
-}
-
-/// Thin shim so the renderers can call `bearer_header_value(args)`
-/// without spelling out `args.auth_token.as_deref()` every time.
-/// Delegates to the shared `render_shared::bearer_header_value` which
-/// takes a raw `Option<&str>` so other commands can call it too.
-fn bearer_header_value(args: &InstallMcpArgs) -> Option<String> {
-    bearer_header_value_shared(args.auth_token.as_deref())
 }
 
 /// Insert / replace `[mcp_servers.<name>]` in a Codex `config.toml`.
@@ -321,7 +317,7 @@ fn codex_upsert_mcp_server(
     // override per-tool — see Codex's `[mcp_servers.X.tools]`
     // map.
     server["default_tools_approval_mode"] = value("approve");
-    if let Some(b) = bearer_header_value_shared(args.auth_token.as_deref()) {
+    if let Some(b) = bearer_header_value(args.auth_token.as_deref()) {
         let mut headers = Table::new();
         headers["Authorization"] = value(b);
         server["http_headers"] = Item::Table(headers);
@@ -342,7 +338,7 @@ fn codex_upsert_mcp_server(
 }
 
 fn render_claude_code(args: &InstallMcpArgs) -> Result<String> {
-    let bearer = bearer_header_value(args);
+    let bearer = bearer_header_value(args.auth_token.as_deref());
     let cli_line = if let Some(b) = &bearer {
         format!(
             "claude mcp add --transport http {name} {url} \\\n    --header \"Authorization: {b}\"",
@@ -401,7 +397,7 @@ fn render_codex(args: &InstallMcpArgs) -> String {
         name = args.name,
         url = args.server_url,
     );
-    if let Some(b) = bearer_header_value(args) {
+    if let Some(b) = bearer_header_value(args.auth_token.as_deref()) {
         out.push_str(&format!(
             "\n[mcp_servers.{name}.http_headers]\n\
              Authorization = \"{b}\"\n\
@@ -420,7 +416,7 @@ fn render_opencode(args: &InstallMcpArgs) -> Result<String> {
     entry.insert("type".into(), json!("remote"));
     entry.insert("url".into(), json!(args.server_url));
     entry.insert("enabled".into(), json!(true));
-    if let Some(b) = bearer_header_value(args) {
+    if let Some(b) = bearer_header_value(args.auth_token.as_deref()) {
         entry.insert("headers".into(), json!({"Authorization": b}));
     }
     Ok(format!(
@@ -435,7 +431,7 @@ fn render_opencode(args: &InstallMcpArgs) -> Result<String> {
 fn render_cursor(args: &InstallMcpArgs) -> Result<String> {
     let mut entry = serde_json::Map::new();
     entry.insert("url".into(), json!(args.server_url));
-    if let Some(b) = bearer_header_value(args) {
+    if let Some(b) = bearer_header_value(args.auth_token.as_deref()) {
         entry.insert("headers".into(), json!({"Authorization": b}));
     }
     Ok(format!(
@@ -458,7 +454,7 @@ fn render_claude_desktop(args: &InstallMcpArgs) -> Result<String> {
     // mcp-remote's --header flag is how we plumb the Authorization
     // through Claude Desktop's stdio-only config.
     let mut cmd_args = vec![json!("-y"), json!("mcp-remote"), json!(args.server_url)];
-    if let Some(b) = bearer_header_value(args) {
+    if let Some(b) = bearer_header_value(args.auth_token.as_deref()) {
         cmd_args.push(json!("--header"));
         cmd_args.push(json!(format!("Authorization: {b}")));
     }
@@ -490,7 +486,7 @@ fn render_gemini_cli(args: &InstallMcpArgs) -> Result<String> {
     let mut entry = serde_json::Map::new();
     entry.insert("httpUrl".into(), json!(args.server_url));
     entry.insert("timeout".into(), json!(5000));
-    if let Some(b) = bearer_header_value(args) {
+    if let Some(b) = bearer_header_value(args.auth_token.as_deref()) {
         entry.insert("headers".into(), json!({"Authorization": b}));
     }
     Ok(format!(
@@ -509,7 +505,7 @@ fn render_openclaw(args: &InstallMcpArgs) -> Result<String> {
     let mut entry = serde_json::Map::new();
     entry.insert("url".into(), json!(args.server_url));
     entry.insert("transport".into(), json!("streamable-http"));
-    if let Some(b) = bearer_header_value(args) {
+    if let Some(b) = bearer_header_value(args.auth_token.as_deref()) {
         entry.insert("headers".into(), json!({"Authorization": b}));
     }
     Ok(format!(

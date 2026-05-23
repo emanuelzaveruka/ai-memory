@@ -1,11 +1,18 @@
-//! `ai-memory install-hooks` — print the suggested lifecycle-hook
-//! configuration for the chosen agent CLI.
+//! `ai-memory install-hooks` — install lifecycle-hook configuration for
+//! the chosen agent CLI.
 //!
-//! In M3 this is *non-destructive*: we render the JSON snippet the user
-//! should merge into their agent CLI's settings file, plus the absolute
-//! paths to the vendored shell scripts. We intentionally do not mutate
-//! `~/.claude/settings.json` automatically — agent CLI hook formats are
-//! still in flux and bad merges are very user-visible.
+//! Two modes:
+//!
+//! - **Default (print):** renders the JSON/TOML/TypeScript snippet the
+//!   user should merge into their agent CLI's settings file, plus the
+//!   absolute paths to the vendored shell scripts. Nothing is written to
+//!   disk.
+//!
+//! - **`--apply` (recommended):** performs an atomic in-place merge into
+//!   the target config file. A timestamped backup (`.bak-<unix-ts>`) is
+//!   written next to the file before any mutation. Re-runs are
+//!   idempotent — a second `--apply` with unchanged content is a no-op
+//!   and produces no backup.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,9 +31,13 @@ use crate::config::Config;
 ///
 /// # Errors
 /// Returns an error if the hook script directory cannot be located.
-pub fn run(_config: &Config, args: InstallHooksArgs) -> Result<()> {
+pub fn run(config: &Config, args: InstallHooksArgs) -> Result<()> {
     let hooks_dir = resolve_hooks_dir(args.hooks_dir.as_deref(), args.agent)?;
-    let auth = args.auth_token.as_deref();
+    let auth_token_owned = args
+        .auth_token
+        .clone()
+        .or_else(|| config.auth.bearer_token.clone());
+    let auth = auth_token_owned.as_deref();
     if args.apply {
         return match args.agent {
             AgentChoice::ClaudeCode => {
@@ -164,34 +175,7 @@ fn apply_to_codex_settings(
             .join("hooks.json"),
     };
     let staged = stage_hook_scripts(hooks_dir, "codex")?;
-    // Build the Codex-flavoured payload. The JSON shape is identical
-    // to Claude Code's matcher + nested hooks form — only the event
-    // list differs (no `SessionEnd`, which Codex doesn't recognise).
-    let payload = build_codex_payload(&staged, server_url, auth_token);
-    let our_hooks = payload
-        .get("hooks")
-        .and_then(|v| v.as_object())
-        .context("internal: payload builder didn't return a hooks object")?
-        .clone();
-    let outcome = apply_atomic(&path, |existing| {
-        mutate_json(existing, |root| {
-            let hooks = root
-                .entry("hooks")
-                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
-                .as_object_mut()
-                .context("`hooks` is present in hooks.json but not an object")?;
-            // Remove any stale `SessionEnd` entry left behind by an
-            // earlier version of install-hooks that mistakenly wrote
-            // the Claude-Code-only event into Codex's file. Codex
-            // ignores unknown events but the file looks cleaner
-            // without dead keys.
-            hooks.remove("SessionEnd");
-            for (event, value) in &our_hooks {
-                hooks.insert(event.clone(), value.clone());
-            }
-            Ok(())
-        })
-    })?;
+    let outcome = merge_codex_hooks(&staged, server_url, auth_token, &path)?;
     println!(
         "✓ {} {} ({})",
         outcome.verb(),
@@ -214,6 +198,42 @@ fn apply_to_codex_settings(
         println!("`codex --dangerously-bypass-hook-trust` (review hook scripts first).");
     }
     Ok(())
+}
+
+fn merge_codex_hooks(
+    staged: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    config_path: &Path,
+) -> Result<ApplyOutcome> {
+    // Build the Codex-flavoured payload. The JSON shape is identical
+    // to Claude Code's matcher + nested hooks form — only the event
+    // list differs (no `SessionEnd`, which Codex doesn't recognise).
+    let payload = build_codex_payload(staged, server_url, auth_token);
+    let our_hooks = payload
+        .get("hooks")
+        .and_then(|v| v.as_object())
+        .context("internal: payload builder didn't return a hooks object")?
+        .clone();
+    apply_atomic(config_path, |existing| {
+        mutate_json(existing, |root| {
+            let hooks = root
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                .as_object_mut()
+                .context("`hooks` is present in hooks.json but not an object")?;
+            // Remove any stale `SessionEnd` entry left behind by an
+            // earlier version of install-hooks that mistakenly wrote
+            // the Claude-Code-only event into Codex's file. Codex
+            // ignores unknown events but the file looks cleaner
+            // without dead keys.
+            hooks.remove("SessionEnd");
+            for (event, value) in &our_hooks {
+                hooks.insert(event.clone(), value.clone());
+            }
+            Ok(())
+        })
+    })
 }
 
 /// Mutate `~/.cursor/hooks.json` (creating it if absent) so Cursor's
@@ -249,13 +269,33 @@ fn apply_to_cursor_settings(
             .join("hooks.json"),
     };
     let staged = stage_hook_scripts(hooks_dir, "cursor")?;
-    let payload = build_profile_payload(&CURSOR_PROFILE, &staged, server_url, auth_token);
+    let outcome = merge_cursor_hooks(&staged, server_url, auth_token, &path)?;
+    println!(
+        "✓ {} {} ({})",
+        outcome.verb(),
+        path.display(),
+        match outcome {
+            ApplyOutcome::Created => "new file",
+            ApplyOutcome::Updated => "backup written next to it",
+            ApplyOutcome::NoOp => "already up to date",
+        }
+    );
+    Ok(())
+}
+
+fn merge_cursor_hooks(
+    staged: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    config_path: &Path,
+) -> Result<ApplyOutcome> {
+    let payload = build_profile_payload(&CURSOR_PROFILE, staged, server_url, auth_token);
     let our_hooks = payload
         .get("hooks")
         .and_then(|v| v.as_object())
         .context("internal: payload builder didn't return a hooks object")?
         .clone();
-    let outcome = apply_atomic(&path, |existing| {
+    apply_atomic(config_path, |existing| {
         mutate_json(existing, |root| {
             // Cursor requires "version": 1 at the top level.
             // Overwrite unconditionally — the schema is versioned
@@ -272,18 +312,7 @@ fn apply_to_cursor_settings(
             }
             Ok(())
         })
-    })?;
-    println!(
-        "✓ {} {} ({})",
-        outcome.verb(),
-        path.display(),
-        match outcome {
-            ApplyOutcome::Created => "new file",
-            ApplyOutcome::Updated => "backup written next to it",
-            ApplyOutcome::NoOp => "already up to date",
-        }
-    );
-    Ok(())
+    })
 }
 
 /// Mutate `~/.gemini/settings.json` so Gemini CLI fires the ai-memory
@@ -315,13 +344,33 @@ fn apply_to_gemini_settings(
             .join("settings.json"),
     };
     let staged = stage_hook_scripts(hooks_dir, "gemini-cli")?;
-    let payload = build_profile_payload(&GEMINI_PROFILE, &staged, server_url, auth_token);
+    let outcome = merge_gemini_hooks(&staged, server_url, auth_token, &path)?;
+    println!(
+        "✓ {} {} ({})",
+        outcome.verb(),
+        path.display(),
+        match outcome {
+            ApplyOutcome::Created => "new file",
+            ApplyOutcome::Updated => "backup written next to it",
+            ApplyOutcome::NoOp => "already up to date",
+        }
+    );
+    Ok(())
+}
+
+fn merge_gemini_hooks(
+    staged: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    config_path: &Path,
+) -> Result<ApplyOutcome> {
+    let payload = build_profile_payload(&GEMINI_PROFILE, staged, server_url, auth_token);
     let our_hooks = payload
         .get("hooks")
         .and_then(|v| v.as_object())
         .context("internal: payload builder didn't return a hooks object")?
         .clone();
-    let outcome = apply_atomic(&path, |existing| {
+    apply_atomic(config_path, |existing| {
         mutate_json(existing, |root| {
             // Gemini's settings.json mixes MCP servers, hooks, and
             // other config under one document. Get-or-create the
@@ -336,18 +385,7 @@ fn apply_to_gemini_settings(
             }
             Ok(())
         })
-    })?;
-    println!(
-        "✓ {} {} ({})",
-        outcome.verb(),
-        path.display(),
-        match outcome {
-            ApplyOutcome::Created => "new file",
-            ApplyOutcome::Updated => "backup written next to it",
-            ApplyOutcome::NoOp => "already up to date",
-        }
-    );
-    Ok(())
+    })
 }
 
 /// Generate an OpenCode plugin at `~/.config/opencode/plugins/ai-memory.ts`.
@@ -386,12 +424,7 @@ fn apply_to_opencode_plugin(
             .join("ai-memory.ts"),
     };
     let staged = stage_hook_scripts(hooks_dir, "opencode")?;
-    let script = |name: &str| {
-        staged
-            .join(name)
-            .to_string_lossy()
-            .into_owned()
-    };
+    let script = |name: &str| staged.join(name).to_string_lossy().into_owned();
     let token_line = auth_token
         .map(|t| format!("const TOKEN = {};\n", ts_string_literal(t)))
         .unwrap_or_else(|| "const TOKEN = null;\n".to_string());
@@ -593,10 +626,7 @@ fn stage_hook_scripts(source_dir: &Path, agent_label: &str) -> Result<PathBuf> {
         copied += 1;
     }
 
-    eprintln!(
-        "✓ staged {copied} hook script(s) → {}",
-        dest_root.display()
-    );
+    eprintln!("✓ staged {copied} hook script(s) → {}", dest_root.display());
     Ok(dest_root)
 }
 
@@ -682,4 +712,265 @@ fn render_claude_code(hooks_dir: &Path, server_url: &str, auth_token: Option<&st
     println!();
     println!("{serialized}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn stub_scripts(dir: &Path, names: &[&str]) {
+        for name in names {
+            let p = dir.join(name);
+            fs::write(&p, "#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&p).unwrap().permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&p, perms).unwrap();
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Cursor tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn cursor_preserves_existing_user_hooks_and_adds_ours() {
+        let hooks_tmp = TempDir::new().unwrap();
+        stub_scripts(
+            hooks_tmp.path(),
+            &[
+                "session-start.sh",
+                "session-end.sh",
+                "user-prompt-submit.sh",
+                "pre-tool-use.sh",
+                "post-tool-use.sh",
+                "pre-compact.sh",
+                "stop.sh",
+            ],
+        );
+
+        let config_tmp = TempDir::new().unwrap();
+        let config_path = config_tmp.path().join("hooks.json");
+        // Pre-existing settings with a user hook under a different event.
+        fs::write(
+            &config_path,
+            r#"{"version":1,"hooks":{"userHook":"something"}}"#,
+        )
+        .unwrap();
+
+        merge_cursor_hooks(
+            hooks_tmp.path(),
+            "http://127.0.0.1:49374",
+            None,
+            &config_path,
+        )
+        .unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        // User's hook survives.
+        assert_eq!(parsed["hooks"]["userHook"], "something");
+        // Our hooks are present.
+        assert!(
+            parsed["hooks"]["sessionStart"].is_array(),
+            "sessionStart hook should be present"
+        );
+        assert!(
+            parsed["hooks"]["preToolUse"].is_array(),
+            "preToolUse hook should be present"
+        );
+        assert_eq!(
+            parsed["version"], 1,
+            "version: 1 must be set at the top level"
+        );
+    }
+
+    #[test]
+    fn cursor_apply_is_idempotent() {
+        let hooks_tmp = TempDir::new().unwrap();
+        stub_scripts(
+            hooks_tmp.path(),
+            &[
+                "session-start.sh",
+                "session-end.sh",
+                "user-prompt-submit.sh",
+                "pre-tool-use.sh",
+                "post-tool-use.sh",
+                "pre-compact.sh",
+                "stop.sh",
+            ],
+        );
+
+        let config_tmp = TempDir::new().unwrap();
+        let config_path = config_tmp.path().join("hooks.json");
+
+        let first = merge_cursor_hooks(
+            hooks_tmp.path(),
+            "http://127.0.0.1:49374",
+            None,
+            &config_path,
+        )
+        .unwrap();
+        assert_ne!(
+            first,
+            ApplyOutcome::NoOp,
+            "first apply should not be a no-op"
+        );
+
+        let second = merge_cursor_hooks(
+            hooks_tmp.path(),
+            "http://127.0.0.1:49374",
+            None,
+            &config_path,
+        )
+        .unwrap();
+        assert_eq!(second, ApplyOutcome::NoOp, "second apply must be a no-op");
+    }
+
+    // ----------------------------------------------------------------
+    // Codex tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn codex_preserves_unrelated_keys_and_adds_hooks() {
+        let hooks_tmp = TempDir::new().unwrap();
+        stub_scripts(
+            hooks_tmp.path(),
+            &[
+                "session-start.sh",
+                "user-prompt-submit.sh",
+                "pre-tool-use.sh",
+                "post-tool-use.sh",
+                "pre-compact.sh",
+                "stop.sh",
+            ],
+        );
+
+        let config_tmp = TempDir::new().unwrap();
+        let config_path = config_tmp.path().join("hooks.json");
+        // Pre-existing settings with an unrelated key.
+        fs::write(&config_path, r#"{"theme":"dark"}"#).unwrap();
+
+        merge_codex_hooks(
+            hooks_tmp.path(),
+            "http://127.0.0.1:49374",
+            None,
+            &config_path,
+        )
+        .unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        // Unrelated key survives.
+        assert_eq!(parsed["theme"], "dark");
+        // Our hooks are present.
+        assert!(
+            parsed["hooks"]["SessionStart"].is_array(),
+            "SessionStart hook should be present"
+        );
+    }
+
+    #[test]
+    fn codex_removes_stale_session_end_key() {
+        let hooks_tmp = TempDir::new().unwrap();
+        stub_scripts(
+            hooks_tmp.path(),
+            &[
+                "session-start.sh",
+                "user-prompt-submit.sh",
+                "pre-tool-use.sh",
+                "post-tool-use.sh",
+                "pre-compact.sh",
+                "stop.sh",
+            ],
+        );
+
+        let config_tmp = TempDir::new().unwrap();
+        let config_path = config_tmp.path().join("hooks.json");
+        // Simulate a file with a stale SessionEnd entry from a previous
+        // install that mistakenly included the Claude-Code-only event.
+        fs::write(
+            &config_path,
+            r#"{"hooks":{"SessionEnd":[{"matcher":"","hooks":[{"type":"command","command":"stale.sh"}]}]}}"#,
+        )
+        .unwrap();
+
+        merge_codex_hooks(
+            hooks_tmp.path(),
+            "http://127.0.0.1:49374",
+            None,
+            &config_path,
+        )
+        .unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        // SessionEnd must be gone.
+        assert!(
+            parsed["hooks"].get("SessionEnd").is_none(),
+            "stale SessionEnd must be removed; got: {:?}",
+            parsed["hooks"]
+        );
+        // Our hooks are present.
+        assert!(parsed["hooks"]["SessionStart"].is_array());
+    }
+
+    // ----------------------------------------------------------------
+    // Gemini tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn gemini_preserves_mcp_servers_and_adds_hooks() {
+        let hooks_tmp = TempDir::new().unwrap();
+        stub_scripts(
+            hooks_tmp.path(),
+            &[
+                "session-start.sh",
+                "session-end.sh",
+                "pre-tool-use.sh",
+                "post-tool-use.sh",
+                "pre-compact.sh",
+            ],
+        );
+
+        let config_tmp = TempDir::new().unwrap();
+        let config_path = config_tmp.path().join("settings.json");
+        // Pre-existing settings with an mcpServers entry.
+        fs::write(&config_path, r#"{"mcpServers":{"foo":{}}}"#).unwrap();
+
+        merge_gemini_hooks(
+            hooks_tmp.path(),
+            "http://127.0.0.1:49374",
+            None,
+            &config_path,
+        )
+        .unwrap();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        // The pre-existing mcpServers.foo survives.
+        assert!(
+            parsed["mcpServers"]["foo"].is_object(),
+            "mcpServers.foo must survive"
+        );
+        // Our hooks are present with Gemini-specific event names.
+        assert!(
+            parsed["hooks"]["SessionStart"].is_array(),
+            "SessionStart hook should be present"
+        );
+        assert!(
+            parsed["hooks"]["BeforeTool"].is_array(),
+            "BeforeTool hook should be present"
+        );
+        // Claude-Code-only events must NOT appear.
+        assert!(
+            parsed["hooks"].get("PreToolUse").is_none(),
+            "PreToolUse must not appear in Gemini config"
+        );
+    }
 }

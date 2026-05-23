@@ -13,10 +13,9 @@
 //! 5. Writes the new content to a sibling tempfile, fsyncs, then
 //!    renames over the original (POSIX atomic).
 //!
-//! All three M22 file-mutating subcommands (install-mcp --apply,
-//! install-hooks --apply, install-instructions) route through this
-//! function. The mutator decides the format (JSON / TOML / markdown)
-//! and the idempotency rule; the I/O atomics live here.
+//! Every `--apply` mode (install-mcp, install-hooks, install-instructions, …)
+//! routes through this function. The mutator decides the format (JSON /
+//! TOML / markdown) and the idempotency rule; the I/O atomics live here.
 
 use std::fs;
 use std::io::Write as _;

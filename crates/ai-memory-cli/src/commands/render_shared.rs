@@ -24,7 +24,7 @@ use serde_json::json;
 /// `(event-name-in-Claude-Code-settings, hook-script-filename)`.
 ///
 /// Adding a hook event means updating this list AND adding the
-/// matching `hooks/{claude-code,codex,opencode}/<filename>` script —
+/// matching `hooks/{claude-code,codex,cursor,gemini-cli,opencode}/<filename>` script —
 /// the e2e test + the generator in `bin/regen-hooks` (if added) both
 /// key off this constant.
 pub(crate) const CLAUDE_CODE_EVENTS: [(&str, &str); 7] = [
@@ -74,7 +74,13 @@ pub(crate) fn build_claude_code_payload(
     server_url: &str,
     auth_token: Option<&str>,
 ) -> serde_json::Value {
-    build_hook_payload(&CLAUDE_CODE_EVENTS, emit_root, server_url, auth_token)
+    build_hook_payload(
+        &CLAUDE_CODE_EVENTS,
+        emit_root,
+        server_url,
+        auth_token,
+        HookShape::Nested,
+    )
 }
 
 /// Different agents nest hook entries differently. Two shapes
@@ -155,16 +161,6 @@ pub(crate) const GEMINI_EVENTS: [(&str, &str); 5] = [
 /// Per-agent profile constants. Add a new agent by adding one of
 /// these + a script-dir name + a config-file path resolver — the
 /// payload-build path picks up the rest from `shape`.
-// Defined for completeness alongside the other profiles; the Claude
-// Code apply path still goes through `build_claude_code_payload`
-// (kept stable for the existing setup-agent emitter). Marked
-// `allow(dead_code)` so cargo doesn't complain — anyone adding a
-// new caller can switch to `build_profile_payload(&CLAUDE_CODE_PROFILE, …)`.
-#[allow(dead_code)]
-pub(crate) const CLAUDE_CODE_PROFILE: HookProfile = HookProfile {
-    events: &CLAUDE_CODE_EVENTS,
-    shape: HookShape::Nested,
-};
 pub(crate) const CODEX_PROFILE: HookProfile = HookProfile {
     events: &CODEX_EVENTS,
     shape: HookShape::Nested,
@@ -198,7 +194,13 @@ pub(crate) fn build_profile_payload(
     server_url: &str,
     auth_token: Option<&str>,
 ) -> serde_json::Value {
-    build_hook_payload_inner(profile.events, profile.shape, emit_root, server_url, auth_token)
+    build_hook_payload(
+        profile.events,
+        emit_root,
+        server_url,
+        auth_token,
+        profile.shape,
+    )
 }
 
 fn build_hook_payload(
@@ -206,16 +208,7 @@ fn build_hook_payload(
     emit_root: &Path,
     server_url: &str,
     auth_token: Option<&str>,
-) -> serde_json::Value {
-    build_hook_payload_inner(events, HookShape::Nested, emit_root, server_url, auth_token)
-}
-
-fn build_hook_payload_inner(
-    events: &[(&str, &str)],
     shape: HookShape,
-    emit_root: &Path,
-    server_url: &str,
-    auth_token: Option<&str>,
 ) -> serde_json::Value {
     let mut hooks_block = serde_json::Map::new();
     for (event, script) in events {
@@ -344,8 +337,12 @@ mod tests {
         // Flat shape: no inner `hooks: [...]` array; each event
         // maps to an array of {type, command, matcher} entries.
         let root = PathBuf::from("/host/hooks/cursor");
-        let v =
-            build_profile_payload(&CURSOR_PROFILE, &root, "http://localhost:49374", Some("tok"));
+        let v = build_profile_payload(
+            &CURSOR_PROFILE,
+            &root,
+            "http://localhost:49374",
+            Some("tok"),
+        );
         let session_start = v
             .pointer("/hooks/sessionStart/0")
             .and_then(|e| e.as_object())
@@ -390,8 +387,12 @@ mod tests {
         // names (BeforeTool / AfterTool / PreCompress; no
         // UserPromptSubmit, no Stop).
         let root = PathBuf::from("/host/hooks/gemini-cli");
-        let v =
-            build_profile_payload(&GEMINI_PROFILE, &root, "http://localhost:49374", Some("tok"));
+        let v = build_profile_payload(
+            &GEMINI_PROFILE,
+            &root,
+            "http://localhost:49374",
+            Some("tok"),
+        );
         let session_start = v
             .pointer("/hooks/SessionStart/0")
             .and_then(|e| e.as_object())
@@ -412,10 +413,25 @@ mod tests {
             .and_then(|h| h.as_object())
             .map(|o| o.keys().map(String::as_str).collect())
             .unwrap_or_default();
-        for expected in ["SessionStart", "SessionEnd", "BeforeTool", "AfterTool", "PreCompress"] {
-            assert!(events.contains(&expected), "missing Gemini event {expected}");
+        for expected in [
+            "SessionStart",
+            "SessionEnd",
+            "BeforeTool",
+            "AfterTool",
+            "PreCompress",
+        ] {
+            assert!(
+                events.contains(&expected),
+                "missing Gemini event {expected}"
+            );
         }
-        for unexpected in ["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "PreCompact"] {
+        for unexpected in [
+            "PreToolUse",
+            "PostToolUse",
+            "UserPromptSubmit",
+            "Stop",
+            "PreCompact",
+        ] {
             assert!(
                 !events.contains(&unexpected),
                 "Gemini should NOT have CC-only event {unexpected}; got {events:?}"

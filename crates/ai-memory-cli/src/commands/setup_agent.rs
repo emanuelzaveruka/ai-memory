@@ -44,7 +44,11 @@ use crate::config::Config;
 /// Returns an error if the source bundle can't be located, the
 /// destination directory can't be created, any script copy fails,
 /// or the JSON config can't be serialised.
-pub fn run(_config: &Config, args: SetupAgentArgs) -> Result<()> {
+pub fn run(config: &Config, args: SetupAgentArgs) -> Result<()> {
+    let args = SetupAgentArgs {
+        auth_token: args.auth_token.or_else(|| config.auth.bearer_token.clone()),
+        ..args
+    };
     let agent_sub = match args.agent {
         AgentChoice::ClaudeCode => "claude-code",
         AgentChoice::Codex => "codex",
@@ -111,7 +115,10 @@ pub fn run(_config: &Config, args: SetupAgentArgs) -> Result<()> {
 
     match args.agent {
         AgentChoice::ClaudeCode => emit_claude_code(&emit_root, &args)?,
-        AgentChoice::Codex | AgentChoice::Cursor | AgentChoice::GeminiCli | AgentChoice::OpenCode => {
+        AgentChoice::Codex
+        | AgentChoice::Cursor
+        | AgentChoice::GeminiCli
+        | AgentChoice::OpenCode => {
             emit_other(&emit_root, agent_sub, &args);
         }
         AgentChoice::Openclaw => {
