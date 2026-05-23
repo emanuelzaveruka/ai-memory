@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ai_memory_consolidate::{Bootstrap, BootstrapConfig};
+use ai_memory_consolidate::{Bootstrap, BootstrapConfig, BootstrapOutcome};
 use ai_memory_llm::{build_provider, provider_from_env};
 use ai_memory_store::Store;
 use ai_memory_wiki::Wiki;
@@ -90,11 +90,104 @@ pub async fn run(config: &Config, args: BootstrapArgs) -> Result<()> {
         llm: Arc::clone(&llm),
     };
     let outcome = bootstrap.run(&cfg).await?;
-
-    // ---- human-readable report ----
+    print_human_report(&outcome, &args.workspace, &args.project);
+    // Also emit the machine-readable JSON at the end for scripted callers.
     let report = serde_json::to_string_pretty(&outcome)?;
-    println!("{report}");
+    println!("\n--- machine-readable ---\n{report}");
     Ok(())
+}
+
+/// Render the bootstrap outcome as a human-friendly summary. Lists
+/// each source kind separately + every page written + an explicit
+/// "what ai-memory knows now" footer so the operator doesn't assume
+/// the wiki has 100% coverage of the project.
+fn print_human_report(outcome: &BootstrapOutcome, workspace: &str, project: &str) {
+    let kind = if outcome.dry_run {
+        "Dry-run"
+    } else {
+        "Bootstrap"
+    };
+    println!("\n✓ {kind} complete for {workspace}/{project}\n");
+
+    println!("Sources loaded into the LLM:");
+    let c = &outcome.sources_by_kind;
+    if c.git_commits > 0 {
+        println!(
+            "  - {} git commit summar{}",
+            c.git_commits,
+            if c.git_commits == 1 { "y" } else { "ies" }
+        );
+    }
+    if c.readme > 0 {
+        println!("  - README");
+    }
+    if c.doc_files > 0 {
+        println!(
+            "  - {} doc file{} (under docs/)",
+            c.doc_files,
+            if c.doc_files == 1 { "" } else { "s" }
+        );
+    }
+    if c.module_headers > 0 {
+        println!(
+            "  - {} Rust module header{}",
+            c.module_headers,
+            if c.module_headers == 1 { "" } else { "s" }
+        );
+    }
+    if c.project_rules > 0 {
+        println!(
+            "  - {} project-rules file{} (CLAUDE.md / AGENTS.md / …)",
+            c.project_rules,
+            if c.project_rules == 1 { "" } else { "s" }
+        );
+    }
+    println!(
+        "  → ~{} input tokens estimated{}",
+        outcome.estimated_input_tokens,
+        if outcome.sources_dropped > 0 {
+            format!(
+                " (dropped {} lower-priority source{} to stay under budget)",
+                outcome.sources_dropped,
+                if outcome.sources_dropped == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        } else {
+            String::new()
+        }
+    );
+
+    if outcome.dry_run {
+        println!("\n(dry-run — no LLM call, no pages written)");
+    } else {
+        println!(
+            "\nGenerated {} wiki page{}:",
+            outcome.pages_written.len(),
+            if outcome.pages_written.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+        for p in &outcome.pages_written {
+            println!("  - {p}");
+        }
+        if !outcome.rationale.is_empty() {
+            println!("\nRationale: {}", outcome.rationale);
+        }
+    }
+
+    println!(
+        "\n⚠ What ai-memory knows now\n  \
+         Only the sources listed above. NOT every file in your project,\n  \
+         NOT every commit since project start, NOT runtime behaviour or\n  \
+         test logs. As you use Claude Code (or another MCP agent) the\n  \
+         lifecycle hooks will automatically capture your actual workflow,\n  \
+         and consolidation will refine the wiki over time."
+    );
 }
 
 /// `git rev-parse --show-toplevel` — finds the repo root from $PWD.

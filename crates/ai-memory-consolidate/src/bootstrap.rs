@@ -164,6 +164,42 @@ pub struct BootstrapBatch {
     pub rationale: String,
 }
 
+/// Per-kind breakdown of what was actually sent to the LLM. Lets the
+/// CLI surface "we loaded 23 commits + the README + 8 docs" rather
+/// than a single opaque sources-count, so the user can calibrate
+/// what ai-memory actually saw vs. didn't.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SourceCounts {
+    /// Number of git-commit summaries kept.
+    pub git_commits: usize,
+    /// 1 if the README was kept, else 0.
+    pub readme: usize,
+    /// Number of `docs/**/*.md` files kept.
+    pub doc_files: usize,
+    /// Number of Rust `//!` module headers kept.
+    pub module_headers: usize,
+    /// Number of CLAUDE.md / AGENTS.md style rule files kept.
+    pub project_rules: usize,
+}
+
+impl SourceCounts {
+    /// Tally from the post-prune source list.
+    #[must_use]
+    pub fn from_sources(sources: &[BootstrapSource]) -> Self {
+        let mut c = Self::default();
+        for s in sources {
+            match s.kind {
+                SourceKind::GitCommit => c.git_commits += 1,
+                SourceKind::Readme => c.readme += 1,
+                SourceKind::DocFile => c.doc_files += 1,
+                SourceKind::ModuleHeader => c.module_headers += 1,
+                SourceKind::ProjectRules => c.project_rules += 1,
+            }
+        }
+        c
+    }
+}
+
 /// Outcome reported back to the CLI.
 #[derive(Debug, Clone, Serialize)]
 pub struct BootstrapOutcome {
@@ -173,6 +209,8 @@ pub struct BootstrapOutcome {
     pub sources_sent: usize,
     /// Number of sources dropped to stay under `max_input_tokens`.
     pub sources_dropped: usize,
+    /// Per-kind breakdown of what was sent to the LLM.
+    pub sources_by_kind: SourceCounts,
     /// Token budget used by the chosen sources (best-effort estimate).
     pub estimated_input_tokens: usize,
     /// Pages written to the wiki (empty if dry_run).
@@ -278,12 +316,15 @@ impl Bootstrap {
             "bootstrap sources prioritised + budget-capped",
         );
 
+        let kept_counts = SourceCounts::from_sources(&kept);
+
         // ---- dry run early-exits before the LLM call --------------
         if cfg.dry_run {
             return Ok(BootstrapOutcome {
                 sources_collected: collected,
                 sources_sent: kept.len(),
                 sources_dropped: dropped,
+                sources_by_kind: kept_counts,
                 estimated_input_tokens: est_tokens,
                 pages_written: Vec::new(),
                 rationale: "(dry-run; LLM not invoked)".to_string(),
@@ -359,6 +400,7 @@ impl Bootstrap {
             sources_collected: collected,
             sources_sent: kept.len(),
             sources_dropped: dropped,
+            sources_by_kind: kept_counts,
             estimated_input_tokens: est_tokens,
             pages_written: out_paths,
             rationale: batch.rationale,
