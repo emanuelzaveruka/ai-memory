@@ -135,13 +135,47 @@ cmd_upgrade() {
   echo
   if "${DOCKER}" ps --filter "name=^ai-memory$" --format '{{.Names}}' 2>/dev/null \
        | grep -q '^ai-memory$'; then
-    echo "→ restart the running ai-memory container to pick up the new image:"
-    if [ -f "$(pwd)/docker/docker-compose.yml" ] \
-       || [ -f "$(pwd)/docker-compose.yml" ]; then
-      echo "      docker compose up -d   # if you run via compose"
+    # A LOCAL ai-memory container is running. We've just pulled a new
+    # image; `docker restart` won't recreate from the new image, so we
+    # need to stop+remove+recreate. The safe way is via `docker compose
+    # up -d` when a compose file is reachable (it remembers all the
+    # ports/volumes/env). Without compose we can't recreate safely
+    # because we don't know the original `docker run` args — fall
+    # back to a clear instruction.
+    local compose_dir=""
+    if [ -f "$(pwd)/docker/docker-compose.yml" ]; then
+      compose_dir="$(pwd)/docker"
+    elif [ -f "$(pwd)/docker-compose.yml" ]; then
+      compose_dir="$(pwd)"
+    elif [ -f "${HOME}/deploy/ai-memory/docker-compose.yml" ]; then
+      compose_dir="${HOME}/deploy/ai-memory"
     fi
-    echo "      docker stop ai-memory && docker rm ai-memory"
-    echo "      # then re-run your docker-run command (see README Quick start)"
+    if [ -n "${compose_dir}" ]; then
+      echo "→ restarting local ai-memory container via docker compose (${compose_dir})"
+      ( cd "${compose_dir}" && "${DOCKER}" compose up -d ) \
+        || echo "  (compose restart failed; re-run manually: cd ${compose_dir} && docker compose up -d)"
+    else
+      echo "→ a local ai-memory container is running but no compose file"
+      echo "  was found in \$PWD/docker-compose.yml, ./docker/docker-compose.yml,"
+      echo "  or ~/deploy/ai-memory/docker-compose.yml. Restart it manually so"
+      echo "  the new image takes effect:"
+      echo "      docker stop ai-memory && docker rm ai-memory"
+      echo "      # then re-run your docker-run command from the README Quick start"
+    fi
+  fi
+
+  # If the server runs on a different host (homelab scenario), only
+  # the local wrapper + image + hook scripts got refreshed here.
+  # Surface that, because the user still needs to deploy on the
+  # remote box for the server-side binary to update.
+  if [ -n "${AI_MEMORY_SERVER_URL:-}" ] \
+     && ! echo "${AI_MEMORY_SERVER_URL}" | grep -qE '^https?://(127\.|localhost|\[?::1\]?)'; then
+    echo
+    echo "→ Note: AI_MEMORY_SERVER_URL points at ${AI_MEMORY_SERVER_URL}"
+    echo "  Your local image is now up to date, but the remote server still"
+    echo "  runs the previous version. Redeploy on that host (e.g. \`bin/deploy\`"
+    echo "  or \`docker compose pull && docker compose up -d\` in its deploy dir)"
+    echo "  for the server-side binary to update."
   fi
 
   mkdir -p "${CACHE_DIR}"
