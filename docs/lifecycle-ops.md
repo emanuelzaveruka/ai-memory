@@ -4,7 +4,7 @@ Reference for the destructive / state-touching ai-memory commands.
 Read this before running anything that mutates wiki + db, especially
 on a homelab box where mistakes are harder to undo.
 
-## TL;DR — safety matrix
+## TL;DR - safety matrix
 
 | Command | Safe with server **running**? | Wipes data? | Reversible? | Notes |
 |---|---|---|---|---|
@@ -44,7 +44,7 @@ The mutable **project name** (the human-readable `distrobox-gaming`
 or `.config` you see in `/web/`) never appears in any disk path; the
 stable **project_id UUID** does. SQLite's `projects.name` column maps
 name → id. Two projects can have the exact same `pages.path` (e.g.
-both have `decisions/0001.md`) without colliding on disk — the
+both have `decisions/0001.md`) without colliding on disk - the
 namespaced layout guarantees structural isolation.
 
 The git history is rooted at `<wiki_root>` (one repo, all projects
@@ -66,7 +66,7 @@ What happens, in order:
    if either is missing.
 2. Counts rows that will cascade (`pages`, `sessions`,
    `observations`, `handoffs`, `page_embeddings`).
-3. Single `DELETE FROM projects WHERE id = ?` — the V01 + V05
+3. Single `DELETE FROM projects WHERE id = ?` - the V01 + V05
    `ON DELETE CASCADE` foreign keys propagate to every dependent
    table in one transaction.
 4. `std::fs::remove_dir_all(<wiki_root>/<workspace_id>/<project_id>)`
@@ -89,7 +89,7 @@ Why this is safe with the server running:
   it against any other writes.
 - The on-disk delete touches only the project's UUID-keyed subdir,
   which no other project shares files with. No race with the
-  watcher even mid-write — at worst the watcher emits delete
+  watcher even mid-write - at worst the watcher emits delete
   events for files we just removed, which it ignores (no DB row
   to reindex).
 
@@ -127,7 +127,7 @@ ai-memory backup --output-path /tmp/ai-memory-backup.tar.gz
 
 What happens on the server:
 
-1. SQLite online-backup API copies the live WAL DB to a temp file —
+1. SQLite online-backup API copies the live WAL DB to a temp file -
    guaranteed consistent snapshot without stopping the writer.
 2. Server tar-gzips the snapshot + the wiki tree + `config.toml`.
 3. Response body IS the gzipped tarball
@@ -135,7 +135,7 @@ What happens on the server:
 
 CLI writes the response body to `--output-path`. For a homelab user
 this is the standard "snapshot before doing something dangerous"
-move — `ai-memory backup` first, then proceed.
+move - `ai-memory backup` first, then proceed.
 
 Restoring a backup follows the inverse:
 
@@ -171,7 +171,7 @@ Order of operations:
 Failure modes:
 
 - **Server still running** → exits with "another ai-memory process is
-  alive (pid X); stop it before restoring" — same wording as `reset`.
+  alive (pid X); stop it before restoring" - same wording as `reset`.
 - **`--confirm` omitted** → exits with usage hint.
 - **Data dir not empty + no `--force`** → exits with "data dir not
   empty; pass `--force` to overwrite".
@@ -187,13 +187,13 @@ alive. Removes the contents of `wiki/`, `db/`, and `raw/` under the
 configured data dir. `config.toml` is preserved.
 
 Identical sysinfo guard to `restore`. The use case is "wipe and start
-over" — typically when changing major version with a breaking
+over" - typically when changing major version with a breaking
 migration, or when bootstrapping a new install on top of an old
 data dir.
 
 For a docker deploy where the data lives in a host-path bind mount,
 you can also just `rm -rf <host-path>/*` after stopping the
-container — but `ai-memory reset` is the cross-platform path that
+container - but `ai-memory reset` is the cross-platform path that
 works whether the data dir is local, bind-mounted, or in a named
 volume.
 

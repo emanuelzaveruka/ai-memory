@@ -23,7 +23,7 @@ pages get rewritten as a coherent narrative; when the next agent
 starts (Claude Code, Codex, OpenCode, …) it sees a handoff with
 "where you left off" already prepended.
 
-The wiki is plain markdown in a git repo — `grep`-able, openable in
+The wiki is plain markdown in a git repo - `grep`-able, openable in
 Obsidian, backed up with `rsync`. No vector database to babysit, no
 `write_note` ceremony, no manual context-loading. The full design is
 in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the influences and
@@ -34,7 +34,7 @@ priors are at the [bottom](#influences-and-prior-art).
 - **Zero-friction capture.** Lifecycle hooks fire-and-forget every
   prompt + tool call + session boundary. You never type `write_note`.
 - **Cross-agent handoffs.** Quit Claude Code mid-task, start Codex
-  in the same directory hours later — the next agent sees a
+  in the same directory hours later - the next agent sees a
   "where you left off" block before its first prompt.
 - **Per-project isolation by construction.** Each project lives at
   `<wiki_root>/<workspace_id>/<project_id>/…` keyed by stable UUIDs.
@@ -44,7 +44,7 @@ priors are at the [bottom](#influences-and-prior-art).
   at session-end (or PreCompact), not retrieved over raw logs.
   Supersession chain + git-versioned markdown means you can
   time-travel with `git log`.
-- **Built-in `/web` browser.** Read-only HTML UI for the wiki —
+- **Built-in `/web` browser.** Read-only HTML UI for the wiki -
   project list, folder tree, FTS5 search, markdown rendering, dark
   mode. Mounted on the same axum server as MCP.
 - **Multi-agent + multi-machine ready.** Supported clients: Claude
@@ -53,7 +53,7 @@ priors are at the [bottom](#influences-and-prior-art).
   box (LAN/VPN/cloud) with bearer-token auth.
 - **Thin-client CLI.** `ai-memory bootstrap`, `purge-project`,
   `rename-project`, `lint`, `embed`, `forget-sweep`, `backup` are
-  all HTTP clients of the running server — never touch SQLite or
+  all HTTP clients of the running server - never touch SQLite or
   wiki files directly. Server is the single source of truth.
 - **LLM is opt-in.** Zero-LLM mode still gives you FTS5 search +
   rule-based summarisation. Add a provider when you want consolidated
@@ -67,7 +67,7 @@ priors are at the [bottom](#influences-and-prior-art).
   next steps, and a session summary.
 - **"What did we decide about X six weeks ago?"** Type
   `memory_query X` from the agent (or `ai-memory search X` from a
-  terminal) — FTS5 over the wiki. Pages are LLM-consolidated, so
+  terminal) - FTS5 over the wiki. Pages are LLM-consolidated, so
   the hit is a coherent decision page, not a raw chat log.
 - **"This new project has months of history before ai-memory."**
   `cd ~/Projects/<that-project> && ai-memory bootstrap` collects
@@ -80,7 +80,7 @@ priors are at the [bottom](#influences-and-prior-art).
   pages cleanly separated; the `/web` UI is reachable from a
   browser anywhere on the LAN.
 - **"Audit what landed before sharing with a teammate."** Browse
-  the wiki at `http://<server>:49374/web` — HTTP Basic dialog if
+  the wiki at `http://<server>:49374/web` - HTTP Basic dialog if
   auth is on, paste the token as password. Per-project tree view,
   rendered markdown, supersession chain visible per page.
 - **"Drop an experiment, keep the rest."**
@@ -93,7 +93,7 @@ priors are at the [bottom](#influences-and-prior-art).
 You need: Docker + an agent CLI (Claude Code, Codex, OpenCode, Cursor,
 or anything else that speaks MCP).
 
-The default quick-start has **no authentication** — the server binds
+The default quick-start has **no authentication** - the server binds
 to loopback only, so on a single-user laptop nothing else can reach
 it. Adding a bearer token is a one-line change once you're ready to
 expose the server on the LAN; see [Security](#security) below.
@@ -135,13 +135,13 @@ ai-memory install-mcp   --client claude-code --apply
 ai-memory install-hooks --agent  claude-code --apply
 ```
 
-That's it. Start a Claude Code session as usual — every prompt and
+That's it. Start a Claude Code session as usual - every prompt and
 tool call now lands in ai-memory, and the next session you open in
 this project will see a handoff with where you left off.
 
 The `install-mcp` / `install-hooks` commands default to
 `http://127.0.0.1:49374` (matching the server above) and no bearer
-token. Both are idempotent — re-runs replace ai-memory's entry,
+token. Both are idempotent - re-runs replace ai-memory's entry,
 preserve every other server / hook you have configured, and write a
 timestamped `.bak-<ts>` next to the file before each modifying
 write. The hook scripts are staged into
@@ -178,7 +178,7 @@ replacement), (2) `docker pull`s the latest image, (3) re-stages
 hook scripts under `~/.local/share/ai-memory/hooks/<agent>/` for
 every agent you've configured, and (4) tells you how to restart the
 server container so the new binary is picked up. The hook refresh
-is idempotent — re-running `install-hooks --apply` replaces the
+is idempotent - re-running `install-hooks --apply` replaces the
 seven keys ai-memory owns and leaves every other hook the user has
 wired up alone. Set `AI_MEMORY_NO_VERSION_CHECK=1` to silence the
 daily check, or `AI_MEMORY_WRAPPER_URL=<url>` to pin the self-upgrade
@@ -199,16 +199,16 @@ source (e.g. a fork or a tagged release).
 > read-only); daily use from inside the sandbox needs no binary at
 > all (agents reach ai-memory over MCP).
 
-**For everything else** — Codex, OpenCode, Cursor, Claude Desktop,
+**For everything else** - Codex, OpenCode, Cursor, Claude Desktop,
 Gemini CLI, OpenClaw, the curl-based hook installer (no docker
 needed), running ai-memory without docker, the full subcommand
-reference, the homelab deploy pattern, security hardening — see
+reference, the homelab deploy pattern, security hardening - see
 [**`docs/install.md`**](docs/install.md).
 
 ## Security
 
 The default Quick start runs **without authentication** because the
-server is bound to loopback (`127.0.0.1:49374`) — no process outside
+server is bound to loopback (`127.0.0.1:49374`) - no process outside
 this machine can reach it. That's the safest default for a personal
 laptop and matches the "single-user, single-machine" use case the
 project is optimised for.
@@ -287,7 +287,7 @@ sending requests to the server using a different hostname.
 ### Browser access to `/web`
 
 When the server has **no** bearer token set, visit
-`http://<host>:49374/web` in any browser — no prompt.
+`http://<host>:49374/web` in any browser - no prompt.
 
 When `AI_MEMORY_AUTH_TOKEN` is set, the browser shows a native HTTP
 Basic dialog on first visit. Leave the username blank (or any value)
@@ -301,7 +301,7 @@ clients continue to use `Authorization: Bearer <token>`.
 ## Configuring the CLI
 
 The `ai-memory` binary is a thin HTTP client. It never opens the
-wiki or SQLite directly — every state-touching command goes through
+wiki or SQLite directly - every state-touching command goes through
 the running server, which is the sole writer.
 
 Configuration is two environment variables, both **optional**:
@@ -309,7 +309,7 @@ Configuration is two environment variables, both **optional**:
 | Variable | Default | When to set it |
 |---|---|---|
 | `AI_MEMORY_SERVER_URL` | `http://127.0.0.1:49374` | When the server runs somewhere other than this machine (e.g. a homelab at `http://192.168.0.90:49374`). |
-| `AI_MEMORY_AUTH_TOKEN` | unset (no auth) | When the server has bearer auth enabled — see [Security](#security). |
+| `AI_MEMORY_AUTH_TOKEN` | unset (no auth) | When the server has bearer auth enabled - see [Security](#security). |
 
 For the **single-laptop local case** (scenarios A/B) you don't need
 either env var: the CLI talks to the loopback server and just works.
@@ -325,12 +325,12 @@ export AI_MEMORY_AUTH_TOKEN="b9a5075d…"   # only when server has auth enabled
 ```
 
 Explicit flags (`--auth-token`, `--server-url`) on `install-mcp` /
-`install-hooks` override env vars when both are set — useful when
+`install-hooks` override env vars when both are set - useful when
 you're generating configs for a client that talks to a different
 server than the CLI default.
 
 The `init`, `serve`, `install-*`, `generate-auth-token`, and
-`setup-agent` subcommands don't need these env vars — they either
+`setup-agent` subcommands don't need these env vars - they either
 set up local files or start the server itself.
 
 ## How it works in practice
@@ -370,7 +370,7 @@ even though its raw history is gone.
 
 If you're installing ai-memory in a project you've been working on
 for months, the wiki starts empty and the first few sessions are
-net-zero — you're populating, not retrieving. `ai-memory bootstrap`
+net-zero - you're populating, not retrieving. `ai-memory bootstrap`
 solves that by LLM-summarising your existing `git log`, README,
 `docs/`, and module-level doc-comments into seed wiki pages.
 
@@ -385,7 +385,7 @@ ai-memory bootstrap
 ```
 
 The workspace defaults to `default` and the project defaults to the
-current directory's basename — that's almost always what you want, so
+current directory's basename - that's almost always what you want, so
 omit `--workspace` / `--project` unless you're deliberately overriding.
 
 Bootstrap produces a per-project `bootstrap.md` manifest (under
@@ -416,7 +416,7 @@ For a more navigable view, start the server with `--enable-web` and
 open `http://<host>:49374/web` in any browser. Project-list homepage,
 per-project page tree with breadcrumbs, rendered markdown with syntax
 highlighting and metadata (tier, kind, pinned, supersedes chain),
-plus FTS5 search — all read-only, no editing. Light/dark theme
+plus FTS5 search - all read-only, no editing. Light/dark theme
 follows your OS setting via `prefers-color-scheme`.
 
 ![Project list homepage with the LLM-optimised banner; four projects (distrobox-gaming, ai-memory, nes-to-sms, .config) shown as cards with page counts + last activity.](docs/web-projects-home.png)
@@ -435,18 +435,18 @@ ai-memory serve --transport http --bind 127.0.0.1:49374 --enable-web
 
 The web routes are mounted at `/web` on the same axum server as the
 MCP endpoint. When the server has bearer auth enabled, the browser
-shows a native HTTP Basic dialog on first visit — leave the username
+shows a native HTTP Basic dialog on first visit - leave the username
 blank (or any value) and paste the token as the password; the cookie
 persists for 30 days so subsequent navigation doesn't re-prompt.
 Loopback-bound servers with no token need no credentials at all. See
 [Security → Browser access to /web](#browser-access-to-web) above.
 
-### Rules vs facts — ai-memory tells you when something belongs in CLAUDE.md
+### Rules vs facts - ai-memory tells you when something belongs in CLAUDE.md
 
 When you type something like "don't forget to never add a function
 without a unit test", that's a **durable project rule**, not a
 session-level observation. Rules need to fire on every relevant
-action — that's what your project's `CLAUDE.md` / `AGENTS.md` is for
+action - that's what your project's `CLAUDE.md` / `AGENTS.md` is for
 (it's loaded into the agent's system prompt every turn), while
 ai-memory queries only fire when the agent thinks to call them.
 
@@ -460,15 +460,15 @@ the agent sees a suggestion:
 > project's CLAUDE.md / AGENTS.md so the agent sees it on every
 > turn, not just when it remembers to call memory_query.
 
-ai-memory never edits your `CLAUDE.md` itself — the suggestion is
+ai-memory never edits your `CLAUDE.md` itself - the suggestion is
 the whole UX. You copy what's useful, ignore what isn't.
 
 ### When the agent reaches for memory
 
 Hooks handle *capture* (every prompt + tool call + session boundary)
 and *handoff resume* (SessionStart auto-fetches pending handoffs)
-without you typing anything. **Proactive querying** — the agent
-reaching into the wiki on its own — depends on the agent knowing
+without you typing anything. **Proactive querying** - the agent
+reaching into the wiki on its own - depends on the agent knowing
 *when* to call which tool. Concrete patterns once the routing
 snippet is installed (see "Nudge the agent" below):
 
@@ -491,7 +491,7 @@ the next section installs.
 The capture side works automatically. For the *query* side, the
 agent needs a routing table in the project's rules file
 (`CLAUDE.md` for Claude Code; `AGENTS.md` for Codex / OpenCode /
-Cursor / Gemini CLI). Two ways to install it — pick whichever's
+Cursor / Gemini CLI). Two ways to install it - pick whichever's
 easier in the moment:
 
 **From the agent** (no terminal needed):
@@ -516,7 +516,7 @@ ai-memory install-instructions --print              # preview without writing
 
 The CLI's auto-detect: if `$PWD/CLAUDE.md` exists, extend that;
 if `$PWD/AGENTS.md` exists, extend that; if both exist, write to
-both (multi-agent project — keep both files in sync); if neither
+both (multi-agent project - keep both files in sync); if neither
 exists, create `CLAUDE.md` and print a hint about `--target
 AGENTS.md` for non-Claude agents.
 
@@ -524,12 +524,12 @@ Both paths produce the same block. Both replace existing markered
 blocks in place rather than duplicating, so you can re-run safely
 whenever the snippet evolves (e.g. when a new MCP tool ships).
 
-## LLM provider — recommended defaults
+## LLM provider - recommended defaults
 
 You can run ai-memory entirely without an LLM (FTS5 search +
 rule-based summaries, $0). When you *do* configure one, the
 options below are ranked by fitness for ai-memory's
-consolidation workload — see
+consolidation workload - see
 [`docs/llm-provider-comparison.md`](docs/llm-provider-comparison.md)
 for the empirical writeup behind this ranking.
 
@@ -539,7 +539,7 @@ for the empirical writeup behind this ranking.
 > local LLM server and prefer $0 / fully-self-hosted. The
 > three are interchangeable; pick once and forget.
 
-### Option 1 — Claude Haiku 4.5 *(recommended default)*
+### Option 1 - Claude Haiku 4.5 *(recommended default)*
 
 Best balance of speed (~7 s), restraint, and classification
 quality. The only model that consistently classifies durable
@@ -563,7 +563,7 @@ AI_MEMORY_LLM_MODEL=anthropic/claude-haiku-4.5
 LLM_API_KEY=sk-or-v1-…
 ```
 
-### Option 2 — OpenAI GPT-5.4-mini *(cheaper alternative)*
+### Option 2 - OpenAI GPT-5.4-mini *(cheaper alternative)*
 
 ~5× cheaper than Haiku, ~2× faster (~4 s avg). Same parse
 reliability, same faithfulness. One known weakness: mild
@@ -586,13 +586,13 @@ AI_MEMORY_LLM_MODEL=openai/gpt-5.4-mini
 LLM_API_KEY=sk-or-v1-…
 ```
 
-### Option 3 — Local Ollama qwen3:32b *(free / self-hosted)*
+### Option 3 - Local Ollama qwen3:32b *(free / self-hosted)*
 
 $0 per consolidation. Requires a machine with at least ~24 GB
 of unified or VRAM memory to keep the Q4_K_M weights warm
 (~20 GB) plus headroom. Strix Halo / Apple Silicon / a
 recent NVIDIA card all work. Latency is ~90 s but
-consolidation is a background job — users never see it.
+consolidation is a background job - users never see it.
 
 One-time setup on the Ollama host:
 
@@ -615,17 +615,17 @@ LLM_API_KEY=ollama-local                  # any non-empty value; Ollama doesn't 
 ```
 
 If you bind ai-memory to a non-loopback address, also set
-`AI_MEMORY_ALLOWED_HOSTS` — see [Security → DNS-rebinding guard](#dns-rebinding-guard-ai_memory_allowed_hosts).
+`AI_MEMORY_ALLOWED_HOSTS` - see [Security → DNS-rebinding guard](#dns-rebinding-guard-ai_memory_allowed_hosts).
 
 ### What we don't recommend
 
-- **Claude Sonnet 4.5** — strictly dominated by Haiku for
+- **Claude Sonnet 4.5** - strictly dominated by Haiku for
   this task: same parse reliability, 3× cost, hallucinated
   details before the prompt was tightened. Use it only if
   you specifically need extended reasoning (e.g. cross-page
   lint sweeps).
 - **Reasoning-mode models** (Kimi-K2.6, Claude with extended
-  thinking enabled, GPT-o3, Gemini "thinking" variants) —
+  thinking enabled, GPT-o3, Gemini "thinking" variants) -
   these models burn `max_tokens` budget on internal
   reasoning before emitting visible content; with the
   strict-JSON consolidation prompt they hang or emit empty
@@ -634,7 +634,7 @@ If you bind ai-memory to a non-loopback address, also set
 ### Embedding provider
 
 The LLM provider drives consolidation + lint. Embeddings are
-a *separate* concern (hybrid retrieval over the wiki — BM25
+a *separate* concern (hybrid retrieval over the wiki - BM25
 + vector RRF). Defaults when `AI_MEMORY_EMBEDDING_PROVIDER`
 is set:
 
@@ -653,7 +653,7 @@ AI_MEMORY_EMBEDDING_DIM=768
 OPENAI_API_KEY=ollama-local
 ```
 
-Skipping the embedding provider entirely is fine —
+Skipping the embedding provider entirely is fine -
 `memory_query` falls back to pure FTS5 (BM25) and still
 works; you just lose vector re-ranking.
 
@@ -702,15 +702,15 @@ data-flow diagram + crate breakdown + cross-cutting invariants.
 
 ## Influences and prior art
 
-- **[Karpathy LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)** — the compile-not-retrieve pattern.
-- **[agentmemory](https://github.com/rohitg00/agentmemory)** — most of the right ideas; this project is the Rust successor.
-- **[basic-memory](https://github.com/basicmachines-co/basic-memory)** — the markdown-on-disk source-of-truth model.
-- **[cognee](https://github.com/topoteretes/cognee)** — pipeline composition and triplet embeddings.
-- **[A-MEM](https://arxiv.org/abs/2502.12110)** — Zettelkasten-style atomic notes with link evolution.
+- **[Karpathy LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)** - the compile-not-retrieve pattern.
+- **[agentmemory](https://github.com/rohitg00/agentmemory)** - most of the right ideas; this project is the Rust successor.
+- **[basic-memory](https://github.com/basicmachines-co/basic-memory)** - the markdown-on-disk source-of-truth model.
+- **[cognee](https://github.com/topoteretes/cognee)** - pipeline composition and triplet embeddings.
+- **[A-MEM](https://arxiv.org/abs/2502.12110)** - Zettelkasten-style atomic notes with link evolution.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
 
 ## Acknowledgements
 

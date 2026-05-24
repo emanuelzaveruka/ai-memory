@@ -1,4 +1,4 @@
-# ai-memory — Architecture
+# ai-memory - Architecture
 
 > One canonical doc for "what is this thing and how is it shaped".
 > Long-form research lives next to this file under [`docs/`](.); this
@@ -14,7 +14,7 @@ sessions.
 
 The artifact you accrete is a **Karpathy-style LLM wiki**: a
 git-versioned tree of markdown pages on disk that gets *compiled* over
-time, not just appended-to. Pages are versioned in place via
+time, appended-to. Pages are versioned in place via
 supersession, semantic concepts compound, episodic logs decay. A
 companion SQLite index gives FTS5 + optional vector retrieval; the
 markdown stays the source of truth.
@@ -86,7 +86,7 @@ markdown stays the source of truth.
    multi-page batch under `concepts/`, `decisions/`, `gotchas/`.
 5. `memory_query` answers via FTS5; when an embedder is configured,
    via RRF fusion of FTS5 + cosine over `page_embeddings`. Every
-   query hit bumps `access_count` + `last_accessed_at` on the page —
+   query hit bumps `access_count` + `last_accessed_at` on the page -
    the M8 reinforcement term.
 6. The forget sweep runs on demand (or on a future schedule): pages
    with `retention < cold_threshold` are soft-deleted; soft-deletions
@@ -100,16 +100,16 @@ markdown stays the source of truth.
 
 **Two layers, one source of truth.**
 
-* `<data_dir>/wiki/` — markdown source of truth. Owned by a `git2`
+* `<data_dir>/wiki/` - markdown source of truth. Owned by a `git2`
   repo so every consolidation pass + every session-end produces a
-  durable commit. Editable by hand in Obsidian / vim — the watcher
+  durable commit. Editable by hand in Obsidian / vim - the watcher
   reconciles outside edits.
-* `<data_dir>/db/memory.sqlite` — derived index. WAL mode. One
+* `<data_dir>/db/memory.sqlite` - derived index. WAL mode. One
   writer actor owns the writer `Connection`; reads go through a
   cloneable read-only pool.
-* `<data_dir>/raw/` — reserved for raw session log archives (future).
-* `<data_dir>/logs/` — rolling daily `tracing` output.
-* `<data_dir>/models/` — reserved for bundled embedding models
+* `<data_dir>/raw/` - reserved for raw session log archives (future).
+* `<data_dir>/logs/` - rolling daily `tracing` output.
+* `<data_dir>/models/` - reserved for bundled embedding models
   (M9.5+, when local `ort` lands).
 
 **Schema (current head):**
@@ -131,7 +131,7 @@ markdown stays the source of truth.
 |---|---|---|
 | Working | Current session only | Hard-drop on session end (kept in `observations` for forensics) |
 | Episodic | 30d hot → 180d cold → evict | `salience · exp(−λΔt) + σ · log(1+access_count) · exp(−μ · days_since_access)` |
-| Semantic | Indefinite | None — only supersedeable via M7 LLM rewrite |
+| Semantic | Indefinite | None - only supersedeable via M7 LLM rewrite |
 | Procedural | Indefinite | Frequency-decay if not re-observed |
 
 Pinned pages (`pinned: true` in frontmatter) are exempt from all
@@ -216,7 +216,7 @@ that touch the relevant area.
     startup. (agentmemory #303.)
 12. **No global singletons / `lazy_static` configs.** All deps
     explicit. (cognee #2228.)
-13. **Zero-LLM default path.** LLM features opt-in via env. The
+13. **Zero-LLM default path.** LLM has opt-in via env. The
     system works without any provider configured.
 14. **Tracing subscribers explicitly filter their own module.**
     No feedback loops. (agentmemory #519.)
@@ -256,7 +256,7 @@ OPENAI_API_KEY / VOYAGE_API_KEY
 
 ## Future work
 
-* **M9.5 — local embeddings via `ort`.** Bundle `bge-small-en-v1.5`
+* **M9.5 - local embeddings via `ort`.** Bundle `bge-small-en-v1.5`
   for an API-key-free homelab path. ~200 MB image bloat; trait is
   ready, just needs the `OrtBgeSmallEmbedder` impl + tokenizer wiring.
 * **`sqlite-vec` integration.** Brute-force cosine works fine to a few
@@ -273,14 +273,14 @@ OPENAI_API_KEY / VOYAGE_API_KEY
 
 ## Reading order
 
-* This file — operational summary, you are here.
-* [`docs/design-decisions.md`](design-decisions.md) — the full v1 spec.
+* This file - operational summary, you are here.
+* [`docs/design-decisions.md`](design-decisions.md) - the full v1 spec.
 * [`docs/research-karpathy-llm-wiki.md`](research-karpathy-llm-wiki.md)
-  — what "Karpathy-faithful" means.
+ - what "Karpathy-faithful" means.
 * [`docs/research-agentmemory.md`](research-agentmemory.md),
   [`research-basic-memory.md`](research-basic-memory.md),
-  [`research-cognee.md`](research-cognee.md) — prior art studied.
-* [`docs/issues-*.md`](.) — concrete failure modes we've designed to
+  [`research-cognee.md`](research-cognee.md) - prior art studied.
+* [`docs/issues-*.md`](.) - concrete failure modes we've designed to
   avoid.
-* [`CLAUDE.md`](../CLAUDE.md) — per-session operating rules pinned
+* [`CLAUDE.md`](../CLAUDE.md) - per-session operating rules pinned
   into Claude Code conversations.

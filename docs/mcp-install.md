@@ -1,4 +1,4 @@
-# MCP install guide — additional clients
+# MCP install guide - additional clients
 
 > All snippets below default to `http://127.0.0.1:49374` (local server). For a
 > remote server (homelab, LAN box) substitute the appropriate URL AND add an
@@ -19,7 +19,7 @@
 This page documents how to register ai-memory as an MCP server with
 the agent CLIs **that are not covered inline in the README**.
 
-The three flagship clients — Claude Code, OpenAI Codex, OpenCode —
+The three flagship clients - Claude Code, OpenAI Codex, OpenCode -
 have lifecycle-hook scripts under [`hooks/`](../hooks) and are
 covered in the [main README](../README.md#configure-your-agent-cli).
 
@@ -32,7 +32,7 @@ without a per-client plugin written upstream. The trade-off:
 | | What you get | What you don't get |
 |---|---|---|
 | **MCP only** | LLM can query the wiki, accept handoffs, run memory_consolidate | No automatic session-end summaries; no auto-handoff at session boundaries |
-| **MCP + hooks** | All of the above *plus* every prompt/tool-call captured automatically; handoffs surface at SessionStart with no human prompting | — |
+| **MCP + hooks** | All of the above *plus* every prompt/tool-call captured automatically; handoffs surface at SessionStart with no human prompting | - |
 
 Most of these clients will land hook integration upstream eventually
 (Gemini CLI is the closest); for now, you can still cover the
@@ -216,7 +216,7 @@ plugin and is out of scope for ai-memory v0.2.
 
 ---
 
-## After registering MCP — verify it works
+## After registering MCP - verify it works
 
 Regardless of which client you used, the first sanity check is the
 same: ask the model to list its available MCP tools, or to call
@@ -256,13 +256,13 @@ dir on disk.
 ## When does the auto-handoff actually work?
 
 The cross-agent handoff feature (the "headline" pitch in the README)
-requires both sides — the agent that *ends* a session, and the agent
-that *starts* the next one — to play nicely with ai-memory:
+requires both sides - the agent that *ends* a session, and the agent
+that *starts* the next one - to play nicely with ai-memory:
 
 | Side | What's needed | Covered by |
 |---|---|---|
 | **Ending side** | The `SessionEnd` hook must fire ai-memory's `/hook` endpoint. | Built-in for Claude Code / Codex / OpenCode via the scripts in `hooks/`. |
-| **Starting side** | Either (a) the `SessionStart` hook auto-injects the handoff via `/handoff`, OR (b) the model proactively calls `memory_handoff_accept` on first turn. | (a) is built-in for Claude Code / Codex / OpenCode. (b) works for any MCP-capable client if you nudge the model — see [the CLAUDE.md snippet](../README.md#nudging-the-agent-to-use-memory-proactively). |
+| **Starting side** | Either (a) the `SessionStart` hook auto-injects the handoff via `/handoff`, OR (b) the model proactively calls `memory_handoff_accept` on first turn. | (a) is built-in for Claude Code / Codex / OpenCode. (b) works for any MCP-capable client if you nudge the model - see [the CLAUDE.md snippet](../README.md#nudging-the-agent-to-use-memory-proactively). |
 
 So a typical mixed workflow looks like:
 

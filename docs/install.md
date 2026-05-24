@@ -75,14 +75,14 @@ two env vars automatically.
 
 Each agent CLI needs two things:
 
-1. **MCP registration** — so the agent can call `memory_query`,
+1. **MCP registration** - so the agent can call `memory_query`,
    `memory_recent`, `memory_handoff_accept`.
-2. **Lifecycle hooks** — so the server auto-captures session events.
+2. **Lifecycle hooks** - so the server auto-captures session events.
    Without this, the agent can still query memory but capture
    becomes manual.
 
 The five clients on the [MCP install page](mcp-install.md) (Cursor,
-Claude Desktop, Gemini CLI, OpenClaw, pi) get MCP only — no
+Claude Desktop, Gemini CLI, OpenClaw, pi) get MCP only - no
 lifecycle hooks ship for them today. For the three flagship CLIs
 (Claude Code, Codex, OpenCode), both are wired up.
 
@@ -142,7 +142,7 @@ docker run --rm -v "$HOME/.ai-memory:/host" \
 
 This works cleanly when the container user's UID matches the host
 user's UID (e.g. the homelab where both are 1000). It **fails on
-rootless Docker** and on hosts with `userns-remap` enabled — the
+rootless Docker** and on hosts with `userns-remap` enabled - the
 container can't write to a host directory that belongs to a UID
 outside the user-namespace mapping.
 
@@ -154,7 +154,7 @@ known not to remap UIDs.
 
 ### Cursor, Claude Desktop, Gemini CLI, OpenClaw, pi
 
-These are MCP-only — no lifecycle-hook bundles ship for them. See
+These are MCP-only - no lifecycle-hook bundles ship for them. See
 [**`docs/mcp-install.md`**](mcp-install.md) for the per-client config
 file path and snippet, or one-shot it via:
 
@@ -242,7 +242,7 @@ the repo's `hooks/` automatically:
 ./target/release/ai-memory install-hooks --agent claude-code --auth-token "$TOKEN"
 ```
 
-(No need for `setup-agent` in this case — the scripts already live
+(No need for `setup-agent` in this case - the scripts already live
 at the right host path.)
 
 ---
@@ -428,12 +428,12 @@ docker run -d --name ai-memory \
 ```
 
 Notice the bind: `127.0.0.1:49374`, not `0.0.0.0:49374`. This is the
-critical pairing — **no bearer token AND loopback only** is the only
+critical pairing - **no bearer token AND loopback only** is the only
 safe combination. The startup log will warn loudly if you bind to a
 LAN address without setting `AI_MEMORY_AUTH_TOKEN`.
 
 Then wire up the agent CLI. Both commands default to no auth and
-`http://127.0.0.1:49374` — no extra flags needed for the local case:
+`http://127.0.0.1:49374` - no extra flags needed for the local case:
 
 ```bash
 ai-memory install-mcp   --client claude-code --apply
@@ -444,9 +444,9 @@ ai-memory install-hooks --agent  claude-code --apply
 
 ## See also
 
-- [`docs/deploy.md`](deploy.md) — homelab deploy walkthrough
+- [`docs/deploy.md`](deploy.md) - homelab deploy walkthrough
   (`bin/deploy`, cloudflared TLS, env-file management)
-- [`docs/mcp-install.md`](mcp-install.md) — per-client MCP config
+- [`docs/mcp-install.md`](mcp-install.md) - per-client MCP config
   reference for Cursor, Claude Desktop, Gemini CLI, OpenClaw, pi
-- [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — what's actually
+- [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) - what's actually
   running inside ai-memory

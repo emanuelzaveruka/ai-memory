@@ -20,7 +20,7 @@ stripped, and are gitignored.
 | `docker/.env.production.example` | `docker/.env.production` | LLM + embedding API keys |
 
 `.gitignore` excludes the live files. If you ever see one staged,
-something has drifted — unstage before committing.
+something has drifted - unstage before committing.
 
 ## First-time setup (one-time)
 
@@ -61,7 +61,7 @@ ssh "$SERVER" "docker inspect --format='{{.State.Health.Status}}' ai-memory"
 # Expect: healthy
 ```
 
-## Security — bearer-token auth + encrypted transport
+## Security - bearer-token auth + encrypted transport
 
 The default `docker-compose.prod.yml.example` binds to `0.0.0.0:49374`
 so the LAN can reach the MCP endpoint. **A LAN-bound server with no
@@ -221,7 +221,7 @@ ssh "$SERVER" "tail -100 $DEPLOY_DIR/data/logs/ai-memory.log.$(date +%F)"
   `ai-memory embed --reembed` (after starting with the old config or
   doing a manual SQL fix) to migrate.
 - **Container restart loop**: check
-  `docker logs ai-memory` — the `ai-memory starting` line at the top
+  `docker logs ai-memory` - the `ai-memory starting` line at the top
   reports the resolved config; a missing required env var (e.g.
   `LLM_API_KEY` with `openai-compat` selected but no model) will fail
   here with a clear error.

@@ -128,7 +128,7 @@ mod tests {
 
 ### No destructive deletes without a graveyard step
 
-If a migration removes files (not just moves them), copy or move them to
+If a migration removes files (moves them), copy or move them to
 `<wiki_root>/_graveyard/<migration_name>/<original_path>` first. This lets
 operators recover accidentally-deleted data for at least one release cycle.
 

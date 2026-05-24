@@ -1,4 +1,4 @@
-# LLM provider comparison — local Ollama vs hosted OpenRouter
+# LLM provider comparison - local Ollama vs hosted OpenRouter
 
 > **TL;DR.** ai-memory's consolidation prompt had a latent
 > schema-vs-prompt bug that made every provider fail JSON validation.
@@ -37,7 +37,7 @@
 
 When the homelab deploy switched ai-memory off the billed
 OpenAI / OpenRouter providers and onto the locally-hosted Ollama
-server, we needed empirical evidence — not a vibes-based claim —
+server, we needed empirical evidence - not a vibes-based claim -
 that *consolidation quality didn't degrade*. ai-memory's
 consolidator turns a session's raw observations into 1–5 wiki
 pages classified as `concept`, `decision`, `gotcha`, or `rule`;
@@ -78,7 +78,7 @@ exactly as the production hook ingress emits them.
 
 Per fixture, the runner calls
 [`ai_memory_consolidate::build_batch_request(session_id, &observations)`](../crates/ai-memory-consolidate/src/consolidator.rs)
-— the **same** function the live consolidator uses on every
+- the **same** function the live consolidator uses on every
 `memory_consolidate` invocation. That request is then sent
 through [`ai_memory_llm::complete_structured`](../crates/ai-memory-llm/src/lib.rs)
 (also the live path). Apples-to-apples by construction.
@@ -98,11 +98,11 @@ The home server (`192.168.0.90`) is a Ryzen AI MAX+ 395
 (Strix Halo / gfx1151), 96 GB unified memory, ROCm-backed
 Ollama with `OLLAMA_KEEP_ALIVE=20m` + `OLLAMA_FLASH_ATTENTION=1`
 + `OLLAMA_KV_CACHE_TYPE=q8_0`. Once a model is loaded into
-unified memory it stays warm for 20 min — so the first
+unified memory it stays warm for 20 min - so the first
 request pays a 30–60 s cold-load tax and subsequent ones are
 sub-3 s.
 
-## Run 1 — broken prompts + schema (pre-fix baseline)
+## Run 1 - broken prompts + schema (pre-fix baseline)
 
 Every provider failed schema validation on every fixture:
 
@@ -121,7 +121,7 @@ extracted faithful summaries, and respected the path
 conventions. The failures were **format only**:
 
 - **Kimi** was emitting beautifully formatted markdown
-  (`### Update 1` / `**path:**` / `**body:**`) — completely
+  (`### Update 1` / `**path:**` / `**body:**`) - completely
   ignoring the request for JSON.
 - **qwen3** was emitting clean JSON in code fences, but with
   `tier: 1` / `tier: 2` / `tier: 3` (integers) instead of the
@@ -133,7 +133,7 @@ conventions. The failures were **format only**:
 
 Two separate problems, both **on our side**:
 
-### Bug A — `Tier` had no `JsonSchema` derive
+### Bug A - `Tier` had no `JsonSchema` derive
 
 In `crates/ai-memory-consolidate/src/types.rs`:
 
@@ -149,18 +149,18 @@ pub struct ConsolidatedPageUpdate {
 `schemars` couldn't produce an enum constraint for `tier`
 because `Tier` (the actual enum in `ai-memory-core`) didn't
 have the `JsonSchema` derive. The generated schema field was
-just `{ "type": "string" }` — no `enum` constraint — so models
+just `{ "type": "string" }` - no `enum` constraint - so models
 were free to guess. Both Kimi and qwen3 guessed numeric indices.
 
-### Bug B — prompt described values, didn't enforce them
+### Bug B - prompt described values, didn't enforce them
 
 The system prompt in
 [`build_batch_request`](../crates/ai-memory-consolidate/src/consolidator.rs)
 listed the valid `tier` and `kind` values in prose but never
 said "use these EXACT string values, never an integer, never a
-synonym, never code fences". Local instruction-tuned models —
+synonym, never code fences". Local instruction-tuned models -
 especially when there's no `response_format: json_schema`
-support to enforce — will drift to whatever feels natural.
+support to enforce - will drift to whatever feels natural.
 
 Compounding this: openai-compat providers (Ollama, OpenRouter
 passthrough) do **not** expose strict-mode JSON-schema
@@ -185,7 +185,7 @@ Three small changes landed together:
 pub enum Tier { Working, Episodic, Semantic, Procedural }
 ```
 
-Adds `schemars` as a dep on `ai-memory-core` (acceptable —
+Adds `schemars` as a dep on `ai-memory-core` (acceptable -
 schemars is already a workspace dep used by every type that
 crosses the LLM boundary).
 
@@ -232,7 +232,7 @@ Belt-and-suspenders: the schema now *rejects* the bad values,
 and the prompt makes it actively hard for the model to produce
 them in the first place.
 
-## Run 2 — schema + first prompt fix
+## Run 2 - schema + first prompt fix
 
 After the schema fix + first prompt iteration, the same five
 fixtures produced:
@@ -245,16 +245,16 @@ fixtures produced:
 | 02 architecture-decision | ✓ | 31,039 | 4 | ✓ | 122,200 | 5 |
 | 03 gotcha-with-rule | ✓ | 19,173 | 4 | ✓ | 98,025 | 4 |
 | 04 low-signal-session | ✓ | 6,106 | **1** | ✓ | 51,694 | **1** |
-| 05 multi-topic-session | ✓ | 47,249 | 4 | ✗* | 133,178 | — |
-| **Aggregate** | **5/5** | **avg 26 s** | — | **4/5** | **avg 103 s** | — |
+| 05 multi-topic-session | ✓ | 47,249 | 4 | ✗* | 133,178 | - |
+| **Aggregate** | **5/5** | **avg 26 s** | - | **4/5** | **avg 103 s** | - |
 
 *qwen3's only failure: invented `kind: "concept"` (not in the
-`PageKind` enum — valid values are `decision`/`gotcha`/`rule`/
+`PageKind` enum - valid values are `decision`/`gotcha`/`rule`/
 `fact`). Despite the prompt mentioning the valid set, the
 model drifted. **This gets fixed in Run 3 below.**
 
 Both models **correctly restrained themselves** on fixture
-04 (low-signal-session) and produced a single update — a
+04 (low-signal-session) and produced a single update - a
 non-trivial test the original schema-broken Run 1 couldn't
 even reach.
 
@@ -269,12 +269,12 @@ Same prompt, both Anthropic models side-by-side:
 | 03 gotcha-with-rule | ✓ | 24,810 | 4 | ✓ | 14,304 | 4 |
 | 04 low-signal-session | ✓ | 5,673 | **1** | ✓ | 4,044 | **1** |
 | 05 multi-topic-session | ✓ | 39,189 | 4 | ✓ | 16,026 | 4 |
-| **Aggregate** | **5/5** | **avg 27 s** | — | **5/5** | **avg 13 s** | — |
+| **Aggregate** | **5/5** | **avg 27 s** | - | **5/5** | **avg 13 s** | - |
 
 **Haiku is ~2× faster than Sonnet on every fixture**, hits the
 same 5/5 parse rate, and on the gotcha-with-rule fixture
 correctly classified the `audit-ignore-with-revisit-date`
-convention as `kind: rule` — which **Sonnet missed**, calling
+convention as `kind: rule` - which **Sonnet missed**, calling
 it a generic `gotcha`. The auto-routing to `_rules/<slug>.md`
 that the consolidator depends on therefore *only fires under
 Haiku* for that fixture, not Sonnet.
@@ -285,7 +285,7 @@ faithfulness than Sonnet even with the loose prompt:
 - **Sonnet** invented `Date: 2025-01-23` twice in fixture 5
   (no date in the source observations); fabricated an entire
   `## Alternatives considered` section listing Alpine/Scratch/
-  Debian-slim — none mentioned in the session; added "Better
+  Debian-slim - none mentioned in the session; added "Better
   long-term solutions" / "When NOT to ignore" filler.
 - **Haiku** had a couple of invented "Options considered"
   entries (Alpine, aggressive optimization flags) but
@@ -295,7 +295,7 @@ For consolidation, the headroom Sonnet has over Haiku
 expressed itself as *more hallucination*, not better
 fidelity.
 
-### Kimi-K2.6 (OpenRouter) — INELIGIBLE for this task
+### Kimi-K2.6 (OpenRouter) - INELIGIBLE for this task
 
 After the prompt + schema fixes, the Kimi rerun **hung for
 16+ minutes on the first fixture** and never returned a parseable
@@ -326,7 +326,7 @@ instructions before *either* emitting JSON or running out of
 budget with no content. The eval observed 16 minutes of no
 progress on fixture 1 before being killed.
 
-This is **not a fixable prompt or schema issue** — it's a
+This is **not a fixable prompt or schema issue** - it's a
 property of the model's response style. Run 1 only "worked"
 on Kimi (in the sense of producing *something*) because the
 loose prompt let Kimi emit prose markdown, which used `content`
@@ -336,18 +336,18 @@ reasoning mode and starves the visible response.
 **Kimi-K2.6 is not a suitable provider for ai-memory's
 consolidation workload.** It would work for the broader
 "summarise this for me" use case where formatted prose is
-fine — just not for our JSON-schema-validated path.
+fine - just not for our JSON-schema-validated path.
 
 Other reasoning-mode models (Claude with extended thinking,
 GPT-o3, Gemini "thinking" variants) would need the same
 caveat: turn off reasoning mode, or budget tokens with
 reasoning consumption in mind.
 
-## Run 3 — tightened anti-hallucination system prompt
+## Run 3 - tightened anti-hallucination system prompt
 
 The Run 2 evidence above showed that Sonnet was hallucinating
 dates, fabricating "Alternatives considered" tables, and
-inventing tutorial sections — content that wasn't in the
+inventing tutorial sections - content that wasn't in the
 observations. Even Haiku slipped occasionally. The fix wasn't
 a model swap; it was tightening the **system prompt** to
 demand faithfulness explicitly:
@@ -386,7 +386,7 @@ This change is in
 [`crates/ai-memory-consolidate/src/consolidator.rs`](../crates/ai-memory-consolidate/src/consolidator.rs)
 under `pub const BATCH_SYSTEM_PROMPT`.
 
-### Same fixtures, tightened prompt — Haiku vs Sonnet
+### Same fixtures, tightened prompt - Haiku vs Sonnet
 
 | Metric | Sonnet (old prompt) | Sonnet (tightened) | Δ |
 |---|---|---|---|
@@ -404,7 +404,7 @@ under `pub const BATCH_SYSTEM_PROMPT`.
 | Updates per fixture | 5-4-4-1-4 | 4-2-4-1-3 | fewer manufactured pages |
 | Invented "Options considered" filler | a few | 0 | ✓ gone |
 
-### Same prompt against the local model — Haiku vs qwen3:32b
+### Same prompt against the local model - Haiku vs qwen3:32b
 
 | Fixture | Haiku parse | Haiku ms | Haiku updates | qwen3 parse | qwen3 ms | qwen3 updates |
 |---|---|---|---|---|---|---|
@@ -413,18 +413,18 @@ under `pub const BATCH_SYSTEM_PROMPT`.
 | 03 gotcha-with-rule | ✓ | 7,610 | 3 | ✓ | 91,307 | 3 |
 | 04 low-signal-session | ✓ | 2,922 | **1** | ✓ | 44,502 | **1** |
 | 05 multi-topic-session | ✓ | 9,681 | 3 | ✓ | 122,220 | 5 |
-| **Aggregate** | **5/5** | **avg 8 s** | — | **5/5** | **avg 92 s** | — |
+| **Aggregate** | **5/5** | **avg 8 s** | - | **5/5** | **avg 92 s** | - |
 
-**qwen3 went from 4/5 → 5/5** with the tightened prompt — the
+**qwen3 went from 4/5 → 5/5** with the tightened prompt - the
 explicit field-by-field enumeration of legal `kind` values
 eliminated the "concept" drift that broke Run 2.
 
-The tightened-prompt change is the highest-leverage diff in
+The tightened-prompt change is the highest-use diff in
 the whole investigation. Same models, no infra changes, ~60%
 latency reduction, complete elimination of date hallucination
 on Sonnet, parse rate parity restored for qwen3.
 
-## Run 4 — budget-tier hosted comparison
+## Run 4 - budget-tier hosted comparison
 
 After establishing that Haiku 4.5 dominates Sonnet 4.5 on this
 task, the question became "is there an even cheaper hosted
@@ -439,7 +439,7 @@ option that still works?" Tested two:
 | 03 gotcha-with-rule | ✓ | 4,212 | 4 | ✓ | 8,211 | 3 |
 | 04 low-signal-session | ✓ | 4,636 | **2*** | ✓ | 3,258 | **1** |
 | 05 multi-topic-session | ✓ | 3,997 | 3 | ✓ | 10,583 | 4 |
-| **Aggregate** | **5/5** | **avg 4.3 s** | — | **5/5** | **avg 8.0 s** | — |
+| **Aggregate** | **5/5** | **avg 4.3 s** | - | **5/5** | **avg 8.0 s** | - |
 
 *GPT-5.4-mini failed the restraint test on the low-signal
 session: it manufactured an extra `decisions/docs-spelling.md`
@@ -464,18 +464,18 @@ invented dates, no fabricated tutorial sections.
 | 03 gotcha-with-rule | ✓ | 54,203 | 4 | ✓ | 8,376 | 3 |
 | 04 low-signal-session | ✓ | 4,049 | **1** | ✓ | 2,837 | **1** |
 | 05 multi-topic-session | ✓ | 15,543 | 5 | ✓ | 7,616 | 3 |
-| **Aggregate** | **5/5** | **avg 21.7 s** | — | **5/5** | **avg 7.4 s** | — |
+| **Aggregate** | **5/5** | **avg 21.7 s** | - | **5/5** | **avg 7.4 s** | - |
 
-DeepSeek V4 Flash passes every reliability bar — 5/5 parse,
+DeepSeek V4 Flash passes every reliability bar - 5/5 parse,
 correct restraint on low-signal, no hallucinated dates (the
 "2026-08" that appeared in its output was *legitimately in the
 source observations*), correct `kind: rule` classification.
 Notable: fixture 3 took 54 s, suggesting variance under load
 or extended reasoning. On multi-topic it produced 5 updates
-vs the 3 the other models settled on — slightly more
+vs the 3 the other models settled on - slightly more
 exuberant than Haiku.
 
-## Comprehensive ranking — all six providers
+## Comprehensive ranking - all six providers
 
 Ranking on a 0–5 scale per axis, then aggregated.
 **Higher is better** in every column except Cost (where
@@ -484,12 +484,12 @@ Rows sorted by overall fitness for ai-memory.
 
 | # | Provider | Parse | Speed | Cost† | Faithfulness | Restraint | Classification | Fitness |
 |---|---|---|---|---|---|---|---|---|
-| 1 | **Haiku 4.5** | 5 | 4 | 3 | 5 | **5** | **5** | **5** — recommended default |
-| 2 | **GPT-5.4-mini** | 5 | **5** | **5** | 5 | 3 | 4 | 4 — cheaper alternative |
-| 3 | **qwen3:32b (Ollama)** | 5 | 1 | **5** ($0) | 5 | **5** | 4 | 4 — free if you have a local server |
-| 4 | DeepSeek V4 Flash | 5 | 2 | 4 | 5 | **5** | **5** | 4 — no edge over GPT-mini or Haiku |
-| 5 | Sonnet 4.5 | 5 | 4 | 1 | 4‡ | 4 | 3 | 3 — displaced by Haiku |
-| 6 | Kimi-K2.6 | 0 | 0 | n/a | n/a | n/a | n/a | **0** — ineligible (reasoning model) |
+| 1 | **Haiku 4.5** | 5 | 4 | 3 | 5 | **5** | **5** | **5** - recommended default |
+| 2 | **GPT-5.4-mini** | 5 | **5** | **5** | 5 | 3 | 4 | 4 - cheaper alternative |
+| 3 | **qwen3:32b (Ollama)** | 5 | 1 | **5** ($0) | 5 | **5** | 4 | 4 - free if you have a local server |
+| 4 | DeepSeek V4 Flash | 5 | 2 | 4 | 5 | **5** | **5** | 4 - no edge over GPT-mini or Haiku |
+| 5 | Sonnet 4.5 | 5 | 4 | 1 | 4‡ | 4 | 3 | 3 - displaced by Haiku |
+| 6 | Kimi-K2.6 | 0 | 0 | n/a | n/a | n/a | n/a | **0** - ineligible (reasoning model) |
 
 † Cost score derived from order-of-magnitude $/M output tokens:
 $0 (qwen3) = 5; ~$0.40 (DeepSeek) = 4; ~$1 (GPT-mini) = 5 by
@@ -497,7 +497,7 @@ amortised cost-per-task; ~$5 (Haiku) = 3; ~$15 (Sonnet) = 1.
 
 ‡ Sonnet's faithfulness was 2/5 with the loose prompt (invented
 dates, fabricated alternatives sections). It recovers to 4
-after the tightened prompt — but Haiku achieved that same level
+after the tightened prompt - but Haiku achieved that same level
 without needing the prompt change as much, suggesting Haiku has
 better defaults for this task.
 
@@ -513,7 +513,7 @@ better defaults for this task.
   Inexpensive options change the cost from monthly-recurring
   to negligible.
 - **Faithfulness**: does the model only write what's in the
-  observations? Critical for a *memory* wiki — fabrication
+  observations? Critical for a *memory* wiki - fabrication
   corrupts the long-term record.
 - **Restraint**: does the model resist manufacturing pages
   when the session is low-signal? Lack of restraint pollutes
@@ -531,43 +531,43 @@ better defaults for this task.
 
 For ai-memory's consolidation task specifically:
 
-1. **Haiku 4.5** — **recommended default for most users.**
+1. **Haiku 4.5** - **recommended default for most users.**
    Hosted (always available), 7 s avg latency, restraint +
    classification top of the field, ~$0.02/run is negligible
    for personal use. The benchmark every other option is
    measured against.
-2. **GPT-5.4-mini** — **cheaper hosted alternative.** ~5×
+2. **GPT-5.4-mini** - **cheaper hosted alternative.** ~5×
    cheaper than Haiku, 2× faster (4 s avg). Only weakness is
    mild over-classification on trivial sessions
    (manufactures one extra "decisions/" page on a typo-fix
    session). If budget matters more than restraint, pick
    this.
-3. **qwen3:32b on Ollama** — **free alternative for those
+3. **qwen3:32b on Ollama** - **free alternative for those
    with a local server.** $0 per consolidation. ~92 s
    latency is invisible because consolidation is a background
    job. Restraint + faithfulness match the top hosted models.
    Requires Ollama (or compatible OpenAI-compat server) with
    `qwen3:32b` pulled and enough RAM/VRAM (~20 GB) to keep
    it warm.
-4. **DeepSeek V4 Flash** — **solid but no clear edge.** All
+4. **DeepSeek V4 Flash** - **solid but no clear edge.** All
    reliability bars met, faithful, restrained, correctly
    classifies rules. But GPT-mini matches it on quality and
    beats it on speed; Haiku matches it on quality and beats
    it on classification consistency. Pick only if your
    workflow is already DeepSeek-leaning.
-5. **Sonnet 4.5** — **strictly dominated by Haiku** for
+5. **Sonnet 4.5** - **strictly dominated by Haiku** for
    plain consolidation. 3× the cost for the same parse rate
    and only marginally different latency. Reserve for tasks
    that *specifically* need extended reasoning (cross-page
    lint sweeps that compare contradictory claims across many
    pages, or for sparse-observation sessions where you want
    the model to infer more aggressively).
-6. **Kimi-K2.6** — **ineligible.** Reasoning model burns
+6. **Kimi-K2.6** - **ineligible.** Reasoning model burns
    `max_tokens` budget on internal thinking before emitting
    visible content. Hangs indefinitely on strict-JSON
    prompts. Same caveat applies to any other reasoning-mode
    model (Claude with extended thinking, GPT-o3, Gemini
-   "thinking" variants) — turn reasoning off or budget
+   "thinking" variants) - turn reasoning off or budget
    tokens with consumption in mind before using them here.
 
 ## Qualitative read (Run 2)
@@ -579,7 +579,7 @@ don't capture:
 - **Sonnet writes long, comprehensive entries.** A concept
   page on Docker multi-stage builds will get 3 KB of well-
   organised prose including "When to use" / "When NOT to use"
-  / "Gotchas" sections — content that *wasn't in the
+  / "Gotchas" sections - content that *wasn't in the
   observations*. The model is generating useful tutorial-style
   content, not strictly consolidating what happened.
   Sonnet's fixture 05 page invented a `Date: 2025-01-23`
@@ -616,13 +616,13 @@ prompt), the picture is clear:
   consolidation is a background job, not interactive.
 - **Cost**: **$0 per consolidation** (electricity not modeled).
 - **Fidelity**: comparable to or better than the hosted models
-  — qwen3 was the most faithful provider in Run 2's old-prompt
+ - qwen3 was the most faithful provider in Run 2's old-prompt
   comparisons.
 
 ### Best hosted fallback: Claude Haiku 4.5
 
 If the homelab is unreachable, or for one-off complex
-consolidations, **Haiku 4.5 is the right hosted choice — not
+consolidations, **Haiku 4.5 is the right hosted choice - not
 Sonnet 4.5**:
 
 - **2× faster** than Sonnet at every fixture.
@@ -634,7 +634,7 @@ Sonnet 4.5**:
   identified the rule that Sonnet flattened to a gotcha).
 - Same 5/5 parse reliability.
 
-### Sonnet 4.5 — displaced by Haiku for this task
+### Sonnet 4.5 - displaced by Haiku for this task
 
 Sonnet's reasoning headroom doesn't help consolidation. With
 the loose prompt it expressed itself as *more hallucination*
@@ -645,9 +645,9 @@ cheaper. Reserve Sonnet for tasks where the extra reasoning
 matters (e.g. cross-page lint sweeps that compare contradictory
 claims).
 
-### Kimi-K2.6 — ineligible
+### Kimi-K2.6 - ineligible
 
-Reasoning model — burns `max_tokens` budget internally before
+Reasoning model - burns `max_tokens` budget internally before
 emitting visible content. Run hung for 16+ minutes on fixture 1
 under the strict-JSON prompt. Direct probe confirmed: `content:
 null` with the entire token budget consumed by `reasoning`.
@@ -664,7 +664,7 @@ mode models if used in this pipeline.
 | DeepSeek V4 Flash (OpenRouter) | ~$0.005 | ~22 s | cheap but slower than GPT-mini |
 | Haiku 4.5 (OpenRouter) | ~$0.02 | ~7 s | best restraint/classification |
 | Sonnet 4.5 (OpenRouter) | ~$0.06 | ~11 s | 3× cost of Haiku for same task |
-| Kimi-K2.6 (OpenRouter) | n/a | ✗ hangs | reasoning model — ineligible |
+| Kimi-K2.6 (OpenRouter) | n/a | ✗ hangs | reasoning model - ineligible |
 
 \* Rough order of magnitude; ai-memory consolidations land
 around 2–3 KB of output with the tightened prompt. Per-run $
@@ -688,7 +688,7 @@ Re-run this harness when any of the following changes:
 
 - Repo checkout + `cargo` toolchain (Rust 1.95+, as pinned in
   `rust-toolchain.toml`).
-- An OpenRouter API key, exported as `OPENROUTER_API_KEY` —
+- An OpenRouter API key, exported as `OPENROUTER_API_KEY` -
   pays the Kimi + Sonnet legs.
 - A reachable Ollama with `qwen3:32b` pulled. The default URL
   in the docs assumes the homelab; substitute your own.
@@ -729,7 +729,7 @@ evals/runs/<timestamp>/
 ```
 
 The `.raw.txt` files are the most informative artifact when a
-parse fails — they show *exactly* what the model said, so you
+parse fails - they show *exactly* what the model said, so you
 can tell whether the failure was format (model emitted prose),
 schema (model used integer enums), or substance (model
 produced nothing useful).
@@ -763,13 +763,13 @@ back to `Other`.
 
 Try to hit one of the four hard cases:
 
-1. **Multi-page extraction** — does the model split a session
+1. **Multi-page extraction** - does the model split a session
    into the right slices?
-2. **Restraint** — does it avoid manufacturing pages when
+2. **Restraint** - does it avoid manufacturing pages when
    there's nothing durable?
-3. **Classification** — does it correctly choose `kind: rule`
+3. **Classification** - does it correctly choose `kind: rule`
    for project rules?
-4. **Topic separation** — does it produce separate pages per
+4. **Topic separation** - does it produce separate pages per
    unrelated topic instead of mashing them?
 
 ## What's NOT in this harness (yet)
