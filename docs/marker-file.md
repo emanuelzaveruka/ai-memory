@@ -30,6 +30,11 @@ a marker is found, hook scripts also forward the current `cwd` so
 workspace-only markers can still resolve `project = basename(cwd)` for
 handoff lookups.
 
+The marker path is shared by the POSIX/PowerShell hook scripts and the
+generated OpenCode / OMP TypeScript integrations. In all cases, hook
+capture and handoff lookup send the same `cwd`, `workspace`, and
+`project` query params to the server when a marker is present.
+
 ## Schema
 
 ```toml

@@ -63,3 +63,37 @@ without disturbing the rest of the file.
 - When a change affects user-visible behavior, installation, supported
   platforms, supported agents, providers, or deployment, update
   `CHANGELOG.md` and the README/docs support references in the same commit.
+
+## Rust Engineering Rules
+
+- Prefer small, behavior-preserving changes. Do not add compatibility
+  branches, new abstractions, or new public surface unless a shipped caller,
+  persisted data, or explicit requirement needs them.
+- Optimize the real bottleneck class first: algorithm, query shape, batching,
+  allocation count, IO boundaries, and container choice. Avoid clever
+  micro-optimizations without evidence.
+- Keep SQLite writes behind the single writer actor. For hot paths, batch work
+  into one command/transaction instead of spawning many writer messages or
+  opening per-row transactions.
+- Avoid N+1 store reads. Prefer reader methods that return the data shape the
+  caller actually needs, and use cached/prepared statements for repeated
+  queries.
+- Keep hook ingestion fire-and-forget and bounded. Do not introduce unbounded
+  `tokio::spawn` fan-out, unbounded queues, or synchronous agent-facing waits.
+- Keep CLI commands thin: parse arguments, resolve config once, call typed
+  library functions, render output. Provider-specific behavior belongs in the
+  provider module, not in command handlers.
+- Treat typed boundaries as load-bearing: IDs, `PagePath`, `AgentKind`,
+  sanitization, workspace/project resolution, and provider dialects should be
+  parsed or normalized once and reused.
+- Prefer explicit fallbacks over `unwrap`, `expect`, or `unreachable!` in
+  runtime paths. Panics are acceptable in tests only.
+- Do not use `unsafe` for performance work in this project unless profiling
+  proves it is necessary and the safety argument is documented in the code.
+- Add focused regression tests for bug fixes and behavior changes. For
+  filesystem tests, use temp dirs or injected roots; never depend on the real
+  user home directory being writable.
+- Run the full local gate before claiming a Rust change is ready:
+  `cargo fmt --check`, `git diff --check`,
+  `TAILWIND_SKIP=1 cargo test --workspace`, and
+  `TAILWIND_SKIP=1 cargo clippy --workspace --all-targets -- -D warnings`.

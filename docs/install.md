@@ -5,6 +5,7 @@ path (docker + Claude Code). This page covers everything else:
 
 - [Server on a different machine](#server-on-a-different-machine)
   (homelab, LAN box, remote server)
+- [Configuring the CLI URL and auth](#configuring-the-cli-url-and-auth)
 - [Configuring other agent CLIs](#configuring-other-agent-clis)
   (Codex, OpenCode, OMP, Cursor, Claude Desktop, Gemini CLI, OpenClaw)
 - [Installing hooks without docker](#installing-hooks-without-docker)
@@ -14,6 +15,7 @@ path (docker + Claude Code). This page covers everything else:
 - [LLM provider tiers + self-hosted Ollama](#llm-provider-tiers)
 - [Subcommand reference](#subcommand-reference)
 - [Operating without auth](#operating-without-auth) (local-only)
+- [Keeping ai-memory up to date](#keeping-ai-memory-up-to-date)
 
 > **Shorthand.** Most snippets use `$TOKEN` and `homelab:49374`. If
 > you're following along verbatim:
@@ -62,6 +64,38 @@ ai-memory install-hooks --agent  claude-code --apply \
 
 The CLI commands (`bootstrap`, `status`, `search`, `lint`, etc.) inherit the
 two env vars automatically.
+
+---
+
+## Configuring the CLI URL and auth
+
+The `ai-memory` binary is a thin HTTP client. It never opens the wiki
+or SQLite directly; state-touching commands go through the running
+server, which is the sole writer.
+
+Configuration is two optional environment variables:
+
+| Variable | Default | When to set it |
+|---|---|---|
+| `AI_MEMORY_SERVER_URL` | `http://127.0.0.1:49374` | When the server runs somewhere other than the same machine, such as `http://192.168.0.90:49374`. |
+| `AI_MEMORY_AUTH_TOKEN` | unset | When the server has bearer auth enabled. |
+
+For a single-laptop loopback server, set neither variable. For a
+remote or homelab server, put both in your shell rc or direnv file:
+
+```bash
+export AI_MEMORY_SERVER_URL="http://192.168.0.90:49374"
+export AI_MEMORY_AUTH_TOKEN="<token>"
+```
+
+Explicit `--server-url` and `--auth-token` flags on `install-mcp` and
+`install-hooks` override the environment. That is useful when you are
+generating config for a client that talks to a different server than
+your default CLI target.
+
+`init`, `serve`, `install-*`, `generate-auth-token`, and `setup-agent`
+do not need these env vars because they either set up local files or
+start the server itself.
 
 ---
 
@@ -494,12 +528,61 @@ ai-memory install-mcp   --client claude-code --apply
 ai-memory install-hooks --agent  claude-code --apply
 ```
 
+### Docker compose alternative
+
+If you prefer compose, clone the repo and run:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+The bundled compose file already has `restart: unless-stopped`, a
+healthcheck, and the named volume wired up. Agent setup is the same as
+the regular Docker path.
+
+---
+
+## Keeping ai-memory up to date
+
+The wrapper checks Docker Hub at most once every 24 hours and prints a
+one-line warning when a newer image is available. Upgrade with:
+
+```bash
+ai-memory upgrade
+```
+
+The command self-upgrades the wrapper script, pulls the latest Docker
+image, re-stages hook scripts under
+`~/.local/share/ai-memory/hooks/<agent>/` for configured agents, and
+prints how to restart the server container so the new binary is used.
+Re-running `install-hooks --apply` remains idempotent: ai-memory
+replaces only the hook entries it owns and leaves unrelated hooks alone.
+
+Set `AI_MEMORY_NO_VERSION_CHECK=1` to silence the daily check, or
+`AI_MEMORY_WRAPPER_URL=<url>` to pin wrapper self-upgrades to a fork or
+tagged release.
+
+When the upgraded server starts, it applies SQLite schema migrations and
+pending wiki-structure migrations automatically. No manual database
+reset or wiki rewrite is required for normal upgrades.
+
+If the server runs on another host, `ai-memory upgrade` refreshes only
+the local wrapper, local image, and local hook scripts. Redeploy the
+remote server separately with `bin/deploy` or `docker compose pull &&
+docker compose up -d` in that deploy directory.
+
+Inside ai-jail or another bwrap sandbox, the wrapper is usable from the
+sandbox, but run `install-*` commands outside the sandbox because they
+write to `~/.local/share/ai-memory/hooks/`.
+
 ---
 
 ## See also
 
 - [`docs/deploy.md`](deploy.md) - homelab deploy walkthrough
   (`bin/deploy`, cloudflared TLS, env-file management)
+- [`docs/usage.md`](usage.md) - handoffs, proactive querying, web UI,
+  routing snippet, and raw-wiki inspection
 - [`docs/mcp-install.md`](mcp-install.md) - per-client MCP config
   reference for Cursor, Claude Desktop, Gemini CLI, OpenClaw, OMP
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) - what's actually

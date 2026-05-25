@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker images now bundle both POSIX and PowerShell hook scripts.
 
 ### Fixed
+- Marker-file routing now reaches the generated OpenCode and OMP
+  TypeScript hook integrations, not only the POSIX/PowerShell script
+  hooks. POSIX helpers also preserve the outer hook `cwd` when nested
+  tool payloads contain their own `cwd`, and encode `+` correctly in
+  marker-derived query parameters.
 - `backup --to` now streams the tarball to disk instead of buffering the full
   archive in CLI memory.
 - Hyphenated FTS5 queries such as `ai-memory` are normalized safely instead of

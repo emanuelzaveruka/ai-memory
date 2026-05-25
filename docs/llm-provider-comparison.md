@@ -30,7 +30,7 @@
 > server** (Ollama / vLLM / llama-swap with a 30B-class
 > model): qwen3:32b on Ollama — $0 per consolidation,
 > background latency invisible to users. See
-> [README → LLM provider configuration](../README.md#llm-provider--recommended-defaults)
+> [Installation cookbook - LLM provider tiers](install.md#llm-provider-tiers)
 > for setup. Reproduce the comparison in [`evals/`](../evals/).
 
 ## Why this document exists

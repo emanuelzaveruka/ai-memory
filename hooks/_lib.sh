@@ -36,13 +36,16 @@ ai_memory_parse_toml_key() {
         "$file" | head -n 1
 }
 
-# Extract `cwd` from a JSON payload on stdin or in $1. Returns the
-# value or nothing. Tolerates leading whitespace and escaped quotes
-# inside other keys by anchoring on the `cwd` key explicitly.
+# Extract the first `cwd` from a JSON payload on stdin or in $1. Returns
+# the value or nothing. This is intentionally a tiny shell fallback, not
+# a JSON parser; taking the first match preserves the top-level cwd when
+# tool payloads contain nested `cwd` fields later in the object.
 ai_memory_extract_cwd() {
     payload="${1:-$(cat)}"
-    printf '%s' "$payload" \
-        | sed -n -E 's/.*"cwd"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' \
+    rest=${payload#*\"cwd\"}
+    [ "$rest" = "$payload" ] && return 0
+    printf '%s' "$rest" \
+        | sed -n -E 's/^[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' \
         | head -n 1
 }
 
@@ -51,7 +54,7 @@ ai_memory_extract_cwd() {
 # plus a defensive pass for anything a hand-edited marker might contain.
 ai_memory_url_encode() {
     printf '%s' "$1" \
-        | sed 's/%/%25/g; s/&/%26/g; s/=/%3D/g; s/?/%3F/g; s/#/%23/g; s/ /%20/g'
+        | sed 's/%/%25/g; s/+/%2B/g; s/&/%26/g; s/=/%3D/g; s/?/%3F/g; s/#/%23/g; s/ /%20/g'
 }
 
 # Build a query-string suffix from the marker file walked up from "$1".

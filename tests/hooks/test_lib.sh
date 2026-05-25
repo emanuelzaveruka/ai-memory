@@ -56,6 +56,8 @@ assert_eq "no marker returns empty" "" \
 PAYLOAD='{"session_id":"x","cwd":"/home/u/foo","tool":"Read"}'
 assert_eq "extract cwd from payload"     "/home/u/foo" "$(ai_memory_extract_cwd "$PAYLOAD")"
 assert_eq "extract cwd from empty json"  ""            "$(ai_memory_extract_cwd '{}')"
+PAYLOAD_NESTED='{"session_id":"x","cwd":"/home/u/root","tool_input":{"cwd":"/tmp/nested"}}'
+assert_eq "extract cwd prefers first match" "/home/u/root" "$(ai_memory_extract_cwd "$PAYLOAD_NESTED")"
 
 # --- marker_qs --------------------------------------------------------
 QS=$(ai_memory_marker_qs "$TMP/a/b/c")
@@ -72,6 +74,7 @@ assert_eq "no marker -> empty qs" "" "$QS3"
 assert_eq "url_encode passes safe slug"   "movvia" "$(ai_memory_url_encode "movvia")"
 assert_eq "url_encode escapes ampersand"  "a%26b"  "$(ai_memory_url_encode "a&b")"
 assert_eq "url_encode escapes equals"     "a%3Db"  "$(ai_memory_url_encode "a=b")"
+assert_eq "url_encode escapes plus"       "a%2Bb"  "$(ai_memory_url_encode "a+b")"
 
 # --- summary ----------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

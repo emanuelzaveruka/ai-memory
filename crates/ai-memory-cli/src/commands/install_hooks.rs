@@ -457,6 +457,9 @@ fn build_opencode_plugin(server_url: &str, auth_token: Option<&str>) -> String {
 // re-run.
 
 import type {{ Plugin }} from "@opencode-ai/plugin";
+import {{ existsSync, readFileSync }} from "node:fs";
+import {{ dirname, join, resolve }} from "node:path";
+import {{ homedir }} from "node:os";
 
 const SERVER = {server_literal}.replace(/\/+$/, "");
 const AGENT = "open-code";
@@ -470,6 +473,42 @@ function timeoutSignal(ms: number): AbortSignal | undefined {{
 
 function authHeaders(): Record<string, string> {{
   return TOKEN ? {{ Authorization: `Bearer ${{TOKEN}}` }} : {{}};
+}}
+
+function findMarker(cwd: string | undefined): string | undefined {{
+  if (!cwd) return undefined;
+  let dir = resolve(cwd);
+  const home = homedir();
+  while (dir && dir !== dirname(dir)) {{
+    const marker = join(dir, ".ai-memory.toml");
+    if (existsSync(marker)) return marker;
+    if (home && dir === home) return undefined;
+    dir = dirname(dir);
+  }}
+  return undefined;
+}}
+
+function tomlKey(text: string, key: string): string | undefined {{
+  const re = new RegExp(`^\\s*${{key}}\\s*=\\s*"([^"]*)"`);
+  for (const line of text.split(/\r?\n/)) {{
+    const match = re.exec(line);
+    if (match) return match[1];
+  }}
+  return undefined;
+}}
+
+function applyMarkerParams(url: URL, cwd: string | undefined): void {{
+  const marker = findMarker(cwd);
+  if (!marker || !cwd) return;
+  url.searchParams.set("cwd", cwd);
+  try {{
+    const body = readFileSync(marker, "utf8");
+    const workspace = tomlKey(body, "workspace");
+    const project = tomlKey(body, "project");
+    if (workspace) url.searchParams.set("workspace", workspace);
+    if (project) url.searchParams.set("project", project);
+  }} catch (_e) {{
+  }}
 }}
 
 function sessionID(input: unknown): string | undefined {{
@@ -525,6 +564,7 @@ function postHook(event: string, payload: Record<string, unknown>): void {{
   const url = new URL(`${{SERVER}}/hook`);
   url.searchParams.set("event", event);
   url.searchParams.set("agent", AGENT);
+  applyMarkerParams(url, typeof payload.cwd === "string" ? payload.cwd : undefined);
   try {{
     void fetch(url, {{
       method: "POST",
@@ -541,6 +581,7 @@ async function fetchHandoff(cwd: string): Promise<string | undefined> {{
   const url = new URL(`${{SERVER}}/handoff`);
   url.searchParams.set("agent", AGENT);
   url.searchParams.set("cwd", cwd);
+  applyMarkerParams(url, cwd);
   try {{
     const response = await fetch(url, {{
       headers: authHeaders(),
@@ -703,6 +744,10 @@ fn build_omp_extension(server_url: &str, auth_token: Option<&str>) -> String {
 // will overwrite this file (with a `.bak-<ts>` backup) on each
 // re-run.
 
+import {{ existsSync, readFileSync }} from "node:fs";
+import {{ dirname, join, resolve }} from "node:path";
+import {{ homedir }} from "node:os";
+
 const SERVER = {server_literal}.replace(/\/+$/, "");
 const AGENT = "omp";
 {token_line}
@@ -715,6 +760,42 @@ function timeoutSignal(ms: number): AbortSignal | undefined {{
 
 function authHeaders(): Record<string, string> {{
   return TOKEN ? {{ Authorization: `Bearer ${{TOKEN}}` }} : {{}};
+}}
+
+function findMarker(cwd: string | undefined): string | undefined {{
+  if (!cwd) return undefined;
+  let dir = resolve(cwd);
+  const home = homedir();
+  while (dir && dir !== dirname(dir)) {{
+    const marker = join(dir, ".ai-memory.toml");
+    if (existsSync(marker)) return marker;
+    if (home && dir === home) return undefined;
+    dir = dirname(dir);
+  }}
+  return undefined;
+}}
+
+function tomlKey(text: string, key: string): string | undefined {{
+  const re = new RegExp(`^\\s*${{key}}\\s*=\\s*"([^"]*)"`);
+  for (const line of text.split(/\r?\n/)) {{
+    const match = re.exec(line);
+    if (match) return match[1];
+  }}
+  return undefined;
+}}
+
+function applyMarkerParams(url: URL, cwd: string | undefined): void {{
+  const marker = findMarker(cwd);
+  if (!marker || !cwd) return;
+  url.searchParams.set("cwd", cwd);
+  try {{
+    const body = readFileSync(marker, "utf8");
+    const workspace = tomlKey(body, "workspace");
+    const project = tomlKey(body, "project");
+    if (workspace) url.searchParams.set("workspace", workspace);
+    if (project) url.searchParams.set("project", project);
+  }} catch (_e) {{
+  }}
 }}
 
 function sessionID(ctx: any): string | undefined {{
@@ -785,6 +866,7 @@ function postHook(event: string, payload: Record<string, unknown>): void {{
   const url = new URL(`${{SERVER}}/hook`);
   url.searchParams.set("event", event);
   url.searchParams.set("agent", AGENT);
+  applyMarkerParams(url, typeof payload.cwd === "string" ? payload.cwd : undefined);
   try {{
     void fetch(url, {{
       method: "POST",
@@ -801,6 +883,7 @@ async function fetchHandoff(cwd: string): Promise<string | undefined> {{
   const url = new URL(`${{SERVER}}/handoff`);
   url.searchParams.set("agent", AGENT);
   url.searchParams.set("cwd", cwd);
+  applyMarkerParams(url, cwd);
   try {{
     const response = await fetch(url, {{
       headers: authHeaders(),
@@ -1360,6 +1443,13 @@ mod tests {
         assert!(plugin.contains("const startedSessions = new Set<string>();"));
         assert!(plugin.contains("function startSession"));
         assert!(plugin.contains("fetchHandoff"));
+        assert!(plugin.contains("function applyMarkerParams"));
+        assert!(plugin.contains("readFileSync(marker, \"utf8\")"));
+        assert!(plugin.contains("text.split(/\\r?\\n/)"));
+        assert!(plugin.contains(
+            "applyMarkerParams(url, typeof payload.cwd === \"string\" ? payload.cwd : undefined);"
+        ));
+        assert!(plugin.contains("applyMarkerParams(url, cwd);"));
         assert!(plugin.contains("postPreCompact"));
         assert!(plugin.contains("postHook(\"session-start\""));
         assert!(plugin.contains("postHook(\"user-prompt\""));
@@ -1406,6 +1496,13 @@ mod tests {
         assert!(extension.contains("postHook(\"session-start\""));
         assert!(extension.contains("postHook(\"user-prompt\""));
         assert!(extension.contains("fetchHandoff"));
+        assert!(extension.contains("function applyMarkerParams"));
+        assert!(extension.contains("readFileSync(marker, \"utf8\")"));
+        assert!(extension.contains("text.split(/\\r?\\n/)"));
+        assert!(extension.contains(
+            "applyMarkerParams(url, typeof payload.cwd === \"string\" ? payload.cwd : undefined);"
+        ));
+        assert!(extension.contains("applyMarkerParams(url, cwd);"));
         assert!(extension.contains("Bearer ${TOKEN}"));
         assert!(extension.contains("tok"));
     }
