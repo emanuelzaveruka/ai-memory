@@ -130,10 +130,16 @@ main() {
       *"/var/lib/ai-memory"*) ;;
       *) fail "tmpfiles dry-run did not plan /var/lib/ai-memory: ${tmpfiles_output}" ;;
     esac
-  else
+  elif [ "$(id -u)" = "0" ]; then
     systemd-tmpfiles --root="${TMP_ROOT}" --create "${TMP_ROOT}/usr/lib/tmpfiles.d/ai-memory.conf" >/dev/null
     test -d "${TMP_ROOT}/var/lib/ai-memory" || fail "tmpfiles did not create /var/lib/ai-memory in alternate root"
     test "$(stat -c '%a' "${TMP_ROOT}/var/lib/ai-memory")" = "750" || fail "tmpfiles created /var/lib/ai-memory with unexpected mode"
+  else
+    tmpfiles_output="$(systemd-tmpfiles --root="${TMP_ROOT}" --cat-config "${TMP_ROOT}/usr/lib/tmpfiles.d/ai-memory.conf" 2>&1)"
+    case "${tmpfiles_output}" in
+      *"/var/lib/ai-memory"*) ;;
+      *) fail "tmpfiles config parse did not include /var/lib/ai-memory: ${tmpfiles_output}" ;;
+    esac
   fi
   assert_contains packaging/tmpfiles/ai-memory.conf "d /var/lib/ai-memory 0750 ai-memory ai-memory -"
 
