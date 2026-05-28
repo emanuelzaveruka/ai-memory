@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ai_memory_consolidate::{Consolidator, run_lint, run_sweep};
 use ai_memory_core::{ActiveProject, ProjectId, Sanitizer, WorkspaceId};
@@ -14,7 +15,7 @@ use ai_memory_wiki::{WatcherHandle, Wiki, migrations, run_wiki_migrations};
 use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{Request, StatusCode, header};
+use axum::http::{Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rmcp::ServiceExt;
@@ -23,6 +24,7 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use tokio_util::sync::CancellationToken;
+use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;
 
@@ -56,6 +58,11 @@ struct ConsolidatorSetup {
 /// install, or the transport setup fails.
 pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
     validate_web_ui_args(args.enable_web, args.web_ui_dir.as_deref())?;
+
+    // Merge config + CLI CORS origins (config first, CLI adds new entries).
+    // Validation runs before binding so a misconfigured origin is caught early.
+    let cors_origins = merge_cors_origins(&config.cors_allow_origins, &args.cors_allow_origin);
+    validate_cors_origins(&cors_origins)?;
 
     let store = Store::open(&config.data_dir)
         .with_context(|| format!("opening store at {}", config.data_dir.display()))?;
@@ -209,6 +216,7 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                 store.reader.clone(),
                 wiki.clone(),
                 args.web_ui_dir.as_deref(),
+                &cors_origins,
             );
             let router = apply_http_layers(router, auth_state, config.allowed_hosts.clone());
             let listener = tokio::net::TcpListener::bind(&bind)
@@ -549,6 +557,50 @@ fn configure_consolidator(
     })
 }
 
+/// Validate a list of CORS origins before the server binds.
+///
+/// Rules match the spec: wildcard + credentials is forbidden, each entry
+/// must carry a scheme, and trailing slashes are rejected (they do not
+/// match browser origins which never carry a trailing slash).
+pub fn validate_cors_origins(origins: &[String]) -> Result<()> {
+    for origin in origins {
+        if origin == "*" {
+            anyhow::bail!(
+                "CORS origin `*` is not allowed: the CORS spec forbids credentials \
+                 with a wildcard origin. Use explicit origins such as \
+                 https://app.example.com"
+            );
+        }
+        if !origin.starts_with("http://") && !origin.starts_with("https://") {
+            anyhow::bail!(
+                "CORS origin `{origin}` is missing a scheme. Each entry must start \
+                 with http:// or https://"
+            );
+        }
+        if origin.ends_with('/') {
+            anyhow::bail!(
+                "CORS origin `{origin}` has a trailing slash. Browser origins \
+                 never carry a trailing slash — use `{}` instead",
+                origin.trim_end_matches('/')
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Merge config-file origins with CLI flag origins, preserving order and
+/// deduplicating (config entries appear first).
+fn merge_cors_origins(from_config: &[String], from_cli: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut merged = Vec::new();
+    for origin in from_config.iter().chain(from_cli.iter()) {
+        if seen.insert(origin.clone()) {
+            merged.push(origin.clone());
+        }
+    }
+    merged
+}
+
 fn validate_web_ui_args(enable_web: bool, web_ui_dir: Option<&Path>) -> Result<()> {
     if web_ui_dir.is_some() && !enable_web {
         anyhow::bail!("--web-ui-dir requires --enable-web");
@@ -581,6 +633,7 @@ fn mount_web_router(
     reader: ReaderPool,
     wiki: Wiki,
     web_ui_dir: Option<&Path>,
+    cors_origins: &[String],
 ) -> axum::Router {
     if !enable_web {
         return router;
@@ -589,11 +642,29 @@ fn mount_web_router(
     // axum 0.8, `.layer()` only attaches to routes registered before the
     // call; nesting after the layer would silently bypass auth for /web/*.
 
-    // Read-only JSON API for third-party frontends (e.g. the custom UI).
-    let router = router.nest(
-        "/api/v1",
-        ai_memory_web::api_router(reader.clone(), wiki.clone()),
-    );
+    // Build the api router and optionally wrap it in a CorsLayer — the layer
+    // is scoped ONLY to /api/v1 so /mcp, /hook, /admin, and /web remain
+    // untouched (CORS_NOT_APPLIED_TO_OTHER_ROUTES invariant).
+    let api = ai_memory_web::api_router(reader.clone(), wiki.clone());
+    let api = if cors_origins.is_empty() {
+        api
+    } else {
+        // Origins were already validated before binding, so parsing here
+        // is expected to succeed; `.expect` surfaces a logic bug if it does not.
+        let parsed: Vec<axum::http::HeaderValue> = cors_origins
+            .iter()
+            .map(|o| o.parse().expect("pre-validated origin must parse"))
+            .collect();
+        let cors = CorsLayer::new()
+            .allow_origin(parsed)
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+            .allow_credentials(true)
+            .max_age(Duration::from_secs(600));
+        info!(origins = ?cors_origins, "CORS layer attached to /api/v1");
+        api.layer(cors)
+    };
+    let router = router.nest("/api/v1", api);
 
     // Custom SPA via --web-ui-dir (SPA fallback to index.html), otherwise
     // the built-in server-side wiki browser.
@@ -750,7 +821,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = Store::open(tmp.path()).unwrap();
         let wiki = Wiki::new(tmp.path(), store.writer.clone()).unwrap();
-        let router = mount_web_router(axum::Router::new(), true, store.reader.clone(), wiki, None);
+        let router = mount_web_router(
+            axum::Router::new(),
+            true,
+            store.reader.clone(),
+            wiki,
+            None,
+            &[],
+        );
         let router = apply_http_layers(
             router,
             Arc::new(AuthState::new(Some("secret".to_string()))),
@@ -821,6 +899,197 @@ mod tests {
         assert_eq!(
             provider_health.snapshot().embedding.status,
             ai_memory_llm::ProviderHealthStatus::Unknown
+        );
+    }
+
+    // ── Part B: CORS validation tests ──────────────────────────────────────
+
+    #[test]
+    fn validate_cors_origins_rejects_wildcard() {
+        let err = validate_cors_origins(&["*".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("wildcard"),
+            "error must mention wildcard: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_cors_origins_rejects_missing_scheme() {
+        let err = validate_cors_origins(&["app.example.com".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("missing a scheme"),
+            "error must mention missing scheme: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_cors_origins_rejects_trailing_slash() {
+        let err = validate_cors_origins(&["https://app.example.com/".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("trailing slash"),
+            "error must mention trailing slash: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_cors_origins_accepts_well_formed() {
+        validate_cors_origins(&[
+            "https://app.example.com".to_string(),
+            "http://localhost:5173".to_string(),
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn validate_cors_origins_accepts_empty_list() {
+        validate_cors_origins(&[]).unwrap();
+    }
+
+    #[test]
+    fn merge_cors_origins_deduplicates_preserving_order() {
+        let merged = merge_cors_origins(
+            &[
+                "https://a.example.com".to_string(),
+                "https://b.example.com".to_string(),
+            ],
+            &[
+                "https://b.example.com".to_string(),
+                "https://c.example.com".to_string(),
+            ],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                "https://a.example.com",
+                "https://b.example.com",
+                "https://c.example.com"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_layer_on_api_v1_allows_configured_origin() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone()).unwrap();
+        store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+
+        let cors_origins = ["https://app.example.com".to_string()];
+        let router = mount_web_router(
+            axum::Router::new(),
+            true,
+            store.reader.clone(),
+            wiki,
+            None,
+            &cors_origins,
+        );
+        // No auth layer so we can reach /api/v1 directly.
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/workspaces")
+                    .header("Origin", "https://app.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let acao = resp
+            .headers()
+            .get("access-control-allow-origin")
+            .expect("ACAO header must be present for allowed origin")
+            .to_str()
+            .unwrap();
+        assert_eq!(acao, "https://app.example.com");
+        let acac = resp
+            .headers()
+            .get("access-control-allow-credentials")
+            .expect("ACAC header must be present")
+            .to_str()
+            .unwrap();
+        assert_eq!(acac, "true");
+    }
+
+    #[tokio::test]
+    async fn cors_layer_on_api_v1_denies_unlisted_origin() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone()).unwrap();
+        store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+
+        let cors_origins = ["https://app.example.com".to_string()];
+        let router = mount_web_router(
+            axum::Router::new(),
+            true,
+            store.reader.clone(),
+            wiki,
+            None,
+            &cors_origins,
+        );
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/workspaces")
+                    .header("Origin", "https://evil.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // The request is still served (CORS does not block on the server side),
+        // but the ACAO header must be absent so the browser enforces the policy.
+        assert!(
+            resp.headers().get("access-control-allow-origin").is_none(),
+            "unlisted origin must not receive ACAO header"
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_not_applied_to_other_routes() {
+        // /mcp and /admin routes must not carry CORS headers even when
+        // a CORS origin list is configured (CORS_NOT_APPLIED_TO_OTHER_ROUTES
+        // invariant). We verify by checking that a request to a non-/api/v1
+        // path that 404s (no actual handler mounted here) still lacks ACAO.
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let wiki = Wiki::new(tmp.path(), store.writer.clone()).unwrap();
+
+        let cors_origins = ["https://app.example.com".to_string()];
+        let router = mount_web_router(
+            axum::Router::new(),
+            true,
+            store.reader.clone(),
+            wiki,
+            None,
+            &cors_origins,
+        );
+        // /web is a non-api route; sending an Origin header must not trigger CORS.
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/web")
+                    .header("Origin", "https://app.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            resp.headers().get("access-control-allow-origin").is_none(),
+            "/web must not carry CORS headers: {:?}",
+            resp.headers()
         );
     }
 }

@@ -6,12 +6,20 @@ use std::sync::Arc;
 use ai_memory_core::{PageId, PagePath, ProjectId, WorkspaceId};
 use ai_memory_store::{BriefingSnapshot, HealthPage, PageHit, RelatedPage};
 use axum::extract::{Path, Query, RawQuery, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::state::WebState;
+
+/// Cache TTL for page-list, workspace, search, and summary endpoints.
+const LIST_CACHE_MAX_AGE: u32 = 30;
+/// Cache TTL for project page-list endpoint.
+const PAGES_LIST_CACHE_MAX_AGE: u32 = 60;
+/// Cache TTL (and ETag max-age) for single-page reads.
+const PAGE_CACHE_MAX_AGE: u32 = 300;
 
 /// Build the `/api/v1` router from a shared [`WebState`].
 pub(crate) fn build(state: Arc<WebState>) -> Router {
@@ -49,13 +57,38 @@ pub(crate) fn build(state: Arc<WebState>) -> Router {
         .with_state(state)
 }
 
+/// Attach `Cache-Control: private, max-age=N` to a successful response.
+///
+/// Applied only to 2xx bodies — error paths return their responses
+/// directly without calling this, so error responses stay uncached.
+fn with_cache(resp: Response, max_age: u32) -> Response {
+    let mut resp = resp;
+    if let Ok(val) = HeaderValue::from_str(&format!("private, max-age={max_age}")) {
+        resp.headers_mut().insert(header::CACHE_CONTROL, val);
+    }
+    resp
+}
+
+/// Lowercase hex encoding of a SHA-256 digest.
+fn sha256_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    digest.iter().fold(String::with_capacity(64), |mut s, b| {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
 async fn workspaces_handler(State(state): State<Arc<WebState>>) -> Result<Response, Response> {
     let workspaces = state
         .reader
         .list_workspaces_with_stats()
         .await
         .map_err(internal_error)?;
-    Ok(Json(workspaces).into_response())
+    Ok(with_cache(
+        Json(workspaces).into_response(),
+        LIST_CACHE_MAX_AGE,
+    ))
 }
 
 async fn projects_handler(
@@ -76,7 +109,10 @@ async fn projects_handler(
         state.reader.list_projects_with_stats().await
     }
     .map_err(internal_error)?;
-    Ok(Json(projects).into_response())
+    Ok(with_cache(
+        Json(projects).into_response(),
+        LIST_CACHE_MAX_AGE,
+    ))
 }
 
 async fn pages_handler(
@@ -89,11 +125,15 @@ async fn pages_handler(
         .list_pages(&workspace, &project)
         .await
         .map_err(internal_error)?;
-    Ok(Json(pages).into_response())
+    Ok(with_cache(
+        Json(pages).into_response(),
+        PAGES_LIST_CACHE_MAX_AGE,
+    ))
 }
 
 async fn page_handler(
     State(state): State<Arc<WebState>>,
+    headers: axum::http::HeaderMap,
     Path((workspace, project, path)): Path<(String, String, String)>,
 ) -> Result<Response, Response> {
     let meta = state
@@ -110,29 +150,57 @@ async fn page_handler(
         .read_page(meta.workspace_id, meta.project_id, &page_path)
         .map_err(|_| not_found("page file not found"))?;
 
+    // ETag is computed over the markdown body bytes so a client can skip
+    // the JSON serialisation round-trip when content hasn't changed.
+    let etag_value = format!("\"{}\"", sha256_hex(markdown.body.as_bytes()));
+    let etag_header = HeaderValue::from_str(&etag_value).expect("sha256 hex is always valid ASCII");
+
+    // If-None-Match: if the client sends back the exact ETag we issued,
+    // return 304 with no body (no re-serialisation needed).
+    if let Some(inm) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        && inm == etag_value
+    {
+        let mut resp = axum::http::Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .body(axum::body::Body::empty())
+            .expect("static builder cannot fail");
+        resp.headers_mut().insert(header::ETAG, etag_header.clone());
+        if let Ok(cc) = HeaderValue::from_str(&format!("private, max-age={PAGE_CACHE_MAX_AGE}")) {
+            resp.headers_mut().insert(header::CACHE_CONTROL, cc);
+        }
+        return Ok(resp);
+    }
+
     let links = state
         .reader
         .page_links(meta.workspace_id, meta.project_id, meta.path.clone())
         .await
         .map_err(internal_error)?;
 
-    Ok(Json(ApiPage {
-        backlinks: links.backlinks,
-        body_markdown: markdown.body,
-        created_at: meta.created_at,
-        frontmatter: markdown.frontmatter,
-        kind: meta.kind,
-        links: links.links,
-        path: meta.path,
-        pinned: meta.pinned,
-        project: meta.project_name,
-        supersedes: meta.supersedes,
-        tier: meta.tier,
-        title: meta.title,
-        updated_at: meta.updated_at,
-        workspace: meta.workspace_name,
-    })
-    .into_response())
+    let mut resp = with_cache(
+        Json(ApiPage {
+            backlinks: links.backlinks,
+            body_markdown: markdown.body,
+            created_at: meta.created_at,
+            frontmatter: markdown.frontmatter,
+            kind: meta.kind,
+            links: links.links,
+            path: meta.path,
+            pinned: meta.pinned,
+            project: meta.project_name,
+            supersedes: meta.supersedes,
+            tier: meta.tier,
+            title: meta.title,
+            updated_at: meta.updated_at,
+            workspace: meta.workspace_name,
+        })
+        .into_response(),
+        PAGE_CACHE_MAX_AGE,
+    );
+    resp.headers_mut().insert(header::ETAG, etag_header);
+    Ok(resp)
 }
 
 async fn search_handler(
@@ -192,7 +260,10 @@ async fn search_with_request(
     }
     .map_err(internal_error)?;
 
-    Ok(Json(enrich_hits(state, hits).await?).into_response())
+    Ok(with_cache(
+        Json(enrich_hits(state, hits).await?).into_response(),
+        LIST_CACHE_MAX_AGE,
+    ))
 }
 
 async fn scoped_search_mode(
@@ -298,7 +369,7 @@ async fn recent_handler(
         .map_err(internal_error)?;
     pages.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     pages.truncate(query.limit.clamp(1, 100));
-    Ok(Json(pages).into_response())
+    Ok(with_cache(Json(pages).into_response(), LIST_CACHE_MAX_AGE))
 }
 
 async fn briefing_handler(
@@ -312,7 +383,10 @@ async fn briefing_handler(
         .briefing_for_project(workspace_id, project_id, query.limit.clamp(1, 100))
         .await
         .map_err(internal_error)?;
-    Ok(Json(briefing).into_response())
+    Ok(with_cache(
+        Json(briefing).into_response(),
+        LIST_CACHE_MAX_AGE,
+    ))
 }
 
 async fn overview_handler(
@@ -379,12 +453,15 @@ async fn overview_handler(
         orphan_pages: detail.orphans,
     };
 
-    Ok(Json(ApiOverview {
-        handoff,
-        briefing,
-        health,
-    })
-    .into_response())
+    Ok(with_cache(
+        Json(ApiOverview {
+            handoff,
+            briefing,
+            health,
+        })
+        .into_response(),
+        LIST_CACHE_MAX_AGE,
+    ))
 }
 
 async fn project_overview_handler(
@@ -436,12 +513,15 @@ async fn project_overview_handler(
         orphan_pages: detail.orphans,
     };
 
-    Ok(Json(ApiOverview {
-        handoff,
-        briefing,
-        health,
-    })
-    .into_response())
+    Ok(with_cache(
+        Json(ApiOverview {
+            handoff,
+            briefing,
+            health,
+        })
+        .into_response(),
+        LIST_CACHE_MAX_AGE,
+    ))
 }
 
 async fn lookup_project(

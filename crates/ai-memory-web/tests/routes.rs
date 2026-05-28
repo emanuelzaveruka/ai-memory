@@ -8,7 +8,7 @@ use ai_memory_store::Store;
 use ai_memory_web::{api_router, router};
 use ai_memory_wiki::{Wiki, WritePageRequest};
 use axum::body::Body;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{Method, Request, StatusCode, header};
 use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -1454,4 +1454,233 @@ async fn api_search_rejects_invalid_percent_encoding() {
         .unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["error"], "invalid percent-encoding in query");
+}
+
+// ── Part A: Cache-Control + ETag tests ─────────────────────────────────────
+
+#[tokio::test]
+async fn api_responses_set_cache_control_private() {
+    let (_tmp, store, wiki) = setup().await;
+    let ws = store
+        .writer
+        .get_or_create_workspace("default")
+        .await
+        .unwrap();
+    store
+        .writer
+        .get_or_create_project(ws, "scratch", None)
+        .await
+        .unwrap();
+
+    let app = api_router(store.reader.clone(), wiki.clone());
+    let req = Request::builder()
+        .uri("/workspaces")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let cc = resp
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .expect("Cache-Control header must be present on /workspaces")
+        .to_str()
+        .unwrap();
+    assert!(
+        cc.contains("private"),
+        "Cache-Control must be private: {cc}"
+    );
+    assert!(
+        cc.contains("max-age=30"),
+        "Cache-Control must be max-age=30 for /workspaces: {cc}"
+    );
+}
+
+#[tokio::test]
+async fn api_page_handler_emits_etag_and_supports_if_none_match() {
+    let (_tmp, store, wiki) = setup().await;
+    let ws = store
+        .writer
+        .get_or_create_workspace("default")
+        .await
+        .unwrap();
+    let proj = store
+        .writer
+        .get_or_create_project(ws, "scratch", None)
+        .await
+        .unwrap();
+    wiki.write_page(WritePageRequest {
+        workspace_id: ws,
+        project_id: proj,
+        path: PagePath::new("etag-test.md").unwrap(),
+        frontmatter: serde_json::json!({"kind": "fact"}),
+        body: "# ETag test\n\nSome content for hashing.".into(),
+        tier: Tier::Semantic,
+        pinned: false,
+        title: None,
+    })
+    .await
+    .unwrap();
+
+    let app = api_router(store.reader.clone(), wiki.clone());
+
+    // First request: must return 200 with ETag and Cache-Control.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/workspaces/default/projects/scratch/pages/etag-test.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let etag = resp
+        .headers()
+        .get(header::ETAG)
+        .expect("ETag must be present on single-page read")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let cc = resp
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .expect("Cache-Control must be present on single-page read")
+        .to_str()
+        .unwrap();
+    assert!(cc.contains("max-age=300"), "page max-age must be 300: {cc}");
+
+    // Second request with the returned ETag: must return 304 with empty body.
+    let resp304 = app
+        .oneshot(
+            Request::builder()
+                .uri("/workspaces/default/projects/scratch/pages/etag-test.md")
+                .header(header::IF_NONE_MATCH, &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp304.status(),
+        StatusCode::NOT_MODIFIED,
+        "matching ETag must yield 304"
+    );
+    let body_bytes = axum::body::to_bytes(resp304.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(body_bytes.is_empty(), "304 body must be empty");
+}
+
+#[tokio::test]
+async fn api_page_handler_etag_differs_per_page() {
+    let (_tmp, store, wiki) = setup().await;
+    let ws = store
+        .writer
+        .get_or_create_workspace("default")
+        .await
+        .unwrap();
+    let proj = store
+        .writer
+        .get_or_create_project(ws, "scratch", None)
+        .await
+        .unwrap();
+    wiki.write_page(WritePageRequest {
+        workspace_id: ws,
+        project_id: proj,
+        path: PagePath::new("page-a.md").unwrap(),
+        frontmatter: serde_json::json!({"kind": "fact"}),
+        body: "Body for page A — unique content alpha.".into(),
+        tier: Tier::Semantic,
+        pinned: false,
+        title: None,
+    })
+    .await
+    .unwrap();
+    wiki.write_page(WritePageRequest {
+        workspace_id: ws,
+        project_id: proj,
+        path: PagePath::new("page-b.md").unwrap(),
+        frontmatter: serde_json::json!({"kind": "fact"}),
+        body: "Body for page B — unique content beta.".into(),
+        tier: Tier::Semantic,
+        pinned: false,
+        title: None,
+    })
+    .await
+    .unwrap();
+
+    let app = api_router(store.reader.clone(), wiki.clone());
+
+    let etag_a = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/workspaces/default/projects/scratch/pages/page-a.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let etag_b = app
+        .oneshot(
+            Request::builder()
+                .uri("/workspaces/default/projects/scratch/pages/page-b.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    assert_ne!(
+        etag_a, etag_b,
+        "pages with different bodies must produce different ETags"
+    );
+}
+
+#[tokio::test]
+async fn api_error_responses_do_not_set_cache_control() {
+    let (_tmp, store, wiki) = setup().await;
+    let ws = store
+        .writer
+        .get_or_create_workspace("default")
+        .await
+        .unwrap();
+    store
+        .writer
+        .get_or_create_project(ws, "scratch", None)
+        .await
+        .unwrap();
+
+    let app = api_router(store.reader.clone(), wiki.clone());
+    // Request a page that does not exist — handler returns 404.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/workspaces/default/projects/scratch/pages/missing.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(
+        resp.headers().get(header::CACHE_CONTROL).is_none(),
+        "error responses must not carry a Cache-Control header"
+    );
 }

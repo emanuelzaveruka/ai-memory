@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Cache-Control: private, max-age=N` headers on all `/api/v1` read endpoints
+  (lists/search/recent/briefing/overview: 30–60s; single-page reads: 300s).
+  Errors stay uncached. A polling SPA no longer hits the DB on every request.
+- **ETag + conditional GET** on the single-page read endpoint
+  (`GET /api/v1/workspaces/{ws}/projects/{p}/pages/{*path}`): the response
+  carries `ETag: "<sha256>"` over the markdown body, and a follow-up request
+  with matching `If-None-Match` returns `304 Not Modified` with no body.
+- **`--cors-allow-origin`** flag (repeatable) and
+  `AI_MEMORY_CORS_ALLOW_ORIGINS=a,b,c` env var. When set, a `CorsLayer` is
+  attached **only to `/api/v1`** (`/mcp`, `/hook`, `/admin`, and `/web` are
+  intentionally untouched) so a separately-hosted SPA can call the API. Each
+  origin must include a scheme; `*` is rejected at startup (CORS spec forbids
+  credentials + wildcard). Empty list = same-origin only, unchanged behaviour.
+
 ## [0.6.0] - 2026-05-28
 
 ### Added

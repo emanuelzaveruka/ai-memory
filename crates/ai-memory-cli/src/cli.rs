@@ -726,6 +726,13 @@ pub struct ServeArgs {
     /// streams. No effect on `--transport stdio`.
     #[arg(long)]
     pub http_stateful: bool,
+    /// Origin allowed to call /api/v1 cross-origin (CORS). Repeat the flag
+    /// for multiple origins, or set AI_MEMORY_CORS_ALLOW_ORIGINS to a
+    /// comma-separated list. Must be a fully-qualified origin
+    /// (e.g. https://app.example.com); `*` is rejected (CORS spec forbids
+    /// credentials + wildcard). Empty = same-origin only.
+    #[arg(long = "cors-allow-origin")]
+    pub cors_allow_origin: Vec<String>,
 }
 
 /// Arguments for `write-page`.

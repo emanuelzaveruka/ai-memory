@@ -104,6 +104,17 @@ pub struct Config {
     /// can't be sequences without ugly escaping.
     #[serde(deserialize_with = "deserialize_string_or_vec")]
     pub allowed_hosts: Vec<String>,
+    /// Origins allowed to make cross-origin requests to /api/v1. Empty
+    /// (default) means same-origin only — host your SPA via --web-ui-dir
+    /// instead of using CORS if you can. When non-empty, a CorsLayer is
+    /// attached ONLY to /api/v1; /mcp, /hook, /admin, and /web are NOT
+    /// CORS-enabled (those aren't browser-accessible by design).
+    ///
+    /// Settable via AI_MEMORY_CORS_ALLOW_ORIGINS=a,b,c or one or more
+    /// --cors-allow-origin flags. Each entry must include a scheme;
+    /// `*` is rejected.
+    #[serde(deserialize_with = "deserialize_string_or_vec", default)]
+    pub cors_allow_origins: Vec<String>,
     /// Process-only env values that should never be written to config files.
     #[serde(skip)]
     pub runtime_env: RuntimeEnv,
@@ -232,6 +243,7 @@ impl Default for Config {
             sanitize: ai_memory_core::SanitizeConfig::default(),
             auth: AuthSettings::default(),
             allowed_hosts: vec!["localhost".into(), "127.0.0.1".into(), "::1".into()],
+            cors_allow_origins: Vec::new(),
             runtime_env: RuntimeEnv::default(),
         }
     }
