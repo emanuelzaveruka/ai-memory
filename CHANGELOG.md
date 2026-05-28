@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bash -c` commands that keep the POSIX `.sh` hook scripts and convert
   drive-letter paths to Git Bash paths, matching Claude Code's actual hook
   runner instead of emitting PowerShell commands ([#45]).
+- `ai-memory llm-test --provider anthropic-oauth` now parses and maps to the
+  Anthropic OAuth provider instead of being rejected by clap ([#43]).
 
 ## [0.5.1] - 2026-05-27
 ### Changed
