@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`install-hooks --agent codex` no longer panics with `index not found`**
+  when `~/.codex/config.toml` carries an `[mcp_servers]` table that has other
+  MCP servers (context7, node_repl, …) but no `ai-memory` entry — a
+  perfectly valid setup since ai-memory can integrate via hooks alone.
+  `infer_codex_mcp_config` used `toml_edit`'s panicking `Index` impl with
+  bare `[]` chains; it now walks the table via `.get()` and returns `None`
+  on any missing key. Mirrors the safe pattern the JSON variant has used
+  all along. Adds 4 regression tests covering missing-entry,
+  missing-table, empty-doc, and bare-entry inputs
+  ([#53], thanks @Otavio-Machado-Santos).
+- **`install-hooks --agent claude-code` no longer silently stages 0 scripts
+  and points `settings.json` at an empty directory.** On macOS — and any
+  install where the binary lives outside the repo and the system package
+  paths (`/usr/local/share`, `/usr/share`) are absent — `resolve_hooks_dir`
+  fell through to the data-local candidate, which was *also* the staging
+  destination. The wipe-then-copy flow inside `stage_hook_scripts_in` then
+  deleted the very scripts it was about to read, leaving 0 copied; the
+  caller proceeded to rewrite `settings.json` anyway, disabling capture
+  with no error. The function now (a) canonicalizes source and destination
+  paths, skips the wipe + copy when they match and verifies in-place,
+  preserving any scripts a prior `setup-agent` run extracted there, and
+  (b) bails with an actionable error pointing at `--hooks-dir` or
+  `ai-memory setup-agent` whenever zero scripts are present in either
+  branch. Adds 3 regression tests
+  ([#52], thanks @Otavio-Machado-Santos).
 - **macOS thin-client wrapper no longer crashes with "Permission denied" in
   the log file appender.** The `bin/ai-memory` wrapper passed
   `-u $(id -u):$(id -g)` to the one-shot helper container, which on macOS

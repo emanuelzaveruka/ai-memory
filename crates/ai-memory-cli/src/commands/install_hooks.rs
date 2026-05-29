@@ -257,13 +257,22 @@ fn infer_json_mcp_config(
 
 fn infer_codex_mcp_config(content: &str) -> Option<InferredMcpConfig> {
     let doc: toml_edit::DocumentMut = content.parse().ok()?;
-    let server = &doc["mcp_servers"]["ai-memory"];
-    let hook_server_url = server["url"]
-        .as_str()
+    // `toml_edit::Item`'s `Index` impl panics on missing keys, so this
+    // walks the table chain with `.get()` instead. A user with
+    // `[mcp_servers.context7]` but no `[mcp_servers.ai-memory]` is a
+    // perfectly valid hooks-only Codex setup (issue #53) — return None
+    // rather than abort the whole install with a stack trace.
+    let server = doc.get("mcp_servers")?.get("ai-memory")?;
+
+    let hook_server_url = server
+        .get("url")
+        .and_then(|v| v.as_str())
         .and_then(hook_server_url_from_mcp_url);
-    let auth_token = server["http_headers"]["Authorization"]
-        .as_str()
-        .or_else(|| server["headers"]["Authorization"].as_str())
+    let auth_token = server
+        .get("http_headers")
+        .and_then(|h| h.get("Authorization"))
+        .or_else(|| server.get("headers").and_then(|h| h.get("Authorization")))
+        .and_then(|v| v.as_str())
         .and_then(bearer_token_from_header);
     if hook_server_url.is_none() && auth_token.is_none() {
         return None;
@@ -1297,19 +1306,32 @@ fn stage_hook_scripts_in(
     fs::create_dir_all(&dest_root)
         .with_context(|| format!("creating staging dir {}", dest_root.display()))?;
 
-    // Wipe any previously-staged scripts that the current bundle
-    // no longer ships. Idempotent re-runs against an old install
-    // shouldn't leave stale entries pointed at by nothing.
-    if let Ok(entries) = fs::read_dir(&dest_root) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_file() && is_hook_script_file(&p) {
-                fs::remove_file(&p).ok();
+    // When `resolve_hooks_dir` falls through to the data-local
+    // candidate (e.g. docker `setup-agent` already extracted the
+    // bundle into ~/.local/share/ai-memory/hooks/<agent>/, or a prior
+    // install left scripts in place), the source dir IS the
+    // destination dir. The wipe-then-copy flow below would delete the
+    // very scripts we mean to install before reading them, leaving 0
+    // copied and a settings.json pointing at an empty directory
+    // (issue #52). Detect that case via canonical paths and verify
+    // the existing layout in place instead of touching it.
+    let same_path = same_canonical_dir(source_dir, &dest_root);
+
+    if !same_path {
+        // Wipe any previously-staged scripts that the current bundle
+        // no longer ships. Idempotent re-runs against an old install
+        // shouldn't leave stale entries pointed at by nothing.
+        if let Ok(entries) = fs::read_dir(&dest_root) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() && is_hook_script_file(&p) {
+                    fs::remove_file(&p).ok();
+                }
             }
         }
     }
 
-    let mut copied = 0_usize;
+    let mut count = 0_usize;
     for entry in fs::read_dir(source_dir)
         .with_context(|| format!("reading source bundle {}", source_dir.display()))?
     {
@@ -1318,26 +1340,55 @@ fn stage_hook_scripts_in(
         if !from.is_file() || !is_hook_script_file(&from) {
             continue;
         }
-        copy_hook_file(&from, &dest_root)?;
-        copied += 1;
+        if !same_path {
+            copy_hook_file(&from, &dest_root)?;
+        }
+        count += 1;
     }
 
-    copy_support_hook_scripts(source_dir, &dest_root)?;
+    if !same_path {
+        copy_support_hook_scripts(source_dir, &dest_root)?;
 
-    // Stage the shared `_lib.sh` helper alongside the event scripts so
-    // they can `. "$(dirname "$0")/_lib.sh"` without depending on the
-    // user's PATH or repo layout. The helper lives ONCE in
-    // `hooks/_lib.sh` (one parent up from the agent-specific dir) —
-    // staging it here is what keeps every agent's runtime view
-    // consistent with the source of truth.
-    if let Some(shared) = source_dir.parent().map(|p| p.join("_lib.sh"))
-        && shared.is_file()
-    {
-        copy_hook_file(&shared, &dest_root)?;
+        // Stage the shared `_lib.sh` helper alongside the event scripts so
+        // they can `. "$(dirname "$0")/_lib.sh"` without depending on the
+        // user's PATH or repo layout. The helper lives ONCE in
+        // `hooks/_lib.sh` (one parent up from the agent-specific dir) —
+        // staging it here is what keeps every agent's runtime view
+        // consistent with the source of truth.
+        if let Some(shared) = source_dir.parent().map(|p| p.join("_lib.sh"))
+            && shared.is_file()
+        {
+            copy_hook_file(&shared, &dest_root)?;
+        }
     }
 
-    eprintln!("✓ staged {copied} hook script(s) → {}", dest_root.display());
+    if count == 0 {
+        anyhow::bail!(
+            "no hook scripts found at {}.\n\
+             Refusing to install — pointing the agent's settings at an empty \
+             directory would silently disable all capture. Either pass \
+             `--hooks-dir <path>` to point at a populated source tree, or run \
+             `ai-memory setup-agent --agent <name>` first to extract the \
+             bundled scripts.",
+            source_dir.display()
+        );
+    }
+
+    let verb = if same_path { "verified" } else { "staged" };
+    eprintln!("✓ {verb} {count} hook script(s) → {}", dest_root.display());
     Ok(dest_root)
+}
+
+/// `true` when `a` and `b` resolve to the same directory after symlink
+/// canonicalization. Falls back to literal `==` if either canonicalize
+/// call fails (e.g. dest hasn't been created yet on Windows, network
+/// FS quirks). The caller has already `create_dir_all`'d both ends
+/// in the staging flow, so the fast path almost always wins.
+fn same_canonical_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
 }
 
 /// Copy a single hook file (event script or shared `_lib.sh`) into the
@@ -1629,6 +1680,62 @@ Authorization = "Bearer secret-token"
         assert_eq!(inferred.auth_token.as_deref(), Some("secret-token"));
     }
 
+    /// Regression for issue #53 — `install-hooks --agent codex` used to
+    /// panic with "index not found" when `~/.codex/config.toml` had an
+    /// `[mcp_servers]` table populated with *other* servers (context7,
+    /// node_repl, …) but no ai-memory entry. A perfectly valid setup —
+    /// ai-memory can live in Codex via hooks only without being an MCP
+    /// server — must return None, not abort the whole install.
+    #[test]
+    fn codex_mcp_inference_returns_none_when_ai_memory_entry_missing() {
+        let inferred = infer_codex_mcp_config(
+            r#"[mcp_servers.context7]
+url = "http://localhost:9000/mcp"
+
+[mcp_servers.node_repl]
+command = "npx"
+args = ["node-repl"]
+"#,
+        );
+        assert!(
+            inferred.is_none(),
+            "missing [mcp_servers.ai-memory] must yield None, got {inferred:?}"
+        );
+    }
+
+    /// Same regression class — no `[mcp_servers]` table at all means
+    /// the user is on a hooks-only / fresh config; we should return
+    /// None rather than panic on the first index.
+    #[test]
+    fn codex_mcp_inference_returns_none_when_no_mcp_servers_table() {
+        let inferred = infer_codex_mcp_config(
+            r#"# fresh codex config
+model = "gpt-5"
+"#,
+        );
+        assert!(inferred.is_none());
+    }
+
+    /// And the empty-file edge case the parser still accepts.
+    #[test]
+    fn codex_mcp_inference_returns_none_for_empty_doc() {
+        assert!(infer_codex_mcp_config("").is_none());
+    }
+
+    /// An ai-memory entry that exists but ships neither a `url` nor an
+    /// `Authorization` header still falls back to None (caller infers
+    /// from defaults). Distinguishes "config absent" from "config
+    /// present but unhelpful" — both yield None, neither panics.
+    #[test]
+    fn codex_mcp_inference_returns_none_for_bare_ai_memory_entry() {
+        let inferred = infer_codex_mcp_config(
+            r#"[mcp_servers.ai-memory]
+# intentionally empty — no url, no headers.
+"#,
+        );
+        assert!(inferred.is_none());
+    }
+
     #[test]
     fn bundled_posix_and_powershell_hooks_stay_in_parity() {
         let hooks_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1792,6 +1899,86 @@ Authorization = "Bearer secret-token"
         let staged = stage_hook_scripts_in(&agent_src, "stage-no-lib", &data_dir).unwrap();
         assert!(staged.join("session-start.sh").exists());
         assert!(!staged.join("_lib.sh").exists());
+    }
+
+    /// Regression for issue #52 — when `resolve_hooks_dir` picks the
+    /// data-local dir as the source bundle (the docker `setup-agent`
+    /// flow extracts scripts there) AND the staging destination is
+    /// the *same* dir, the pre-fix wipe-then-copy loop would delete
+    /// every populated script and report `staged 0`. The same-path
+    /// branch must verify in place without wiping, so existing scripts
+    /// survive a re-run.
+    #[test]
+    fn stage_hook_scripts_preserves_in_place_scripts_when_source_equals_dest() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        let agent_label = "stage-in-place";
+        // Simulate "scripts already extracted into the data-local
+        // hooks dir by a prior `setup-agent` run".
+        let in_place = data_dir.join("ai-memory/hooks").join(agent_label);
+        fs::create_dir_all(&in_place).unwrap();
+        stub_scripts(&in_place, &["session-start.sh", "post-tool-use.sh"]);
+
+        // Source == destination (this is what resolve_hooks_dir hands
+        // us when no other candidate exists).
+        let staged = stage_hook_scripts_in(&in_place, agent_label, &data_dir).unwrap();
+
+        assert_eq!(staged, in_place, "destination must canonicalize to source");
+        assert!(
+            staged.join("session-start.sh").is_file(),
+            "in-place script must survive the same-path branch (not be wiped)"
+        );
+        assert!(
+            staged.join("post-tool-use.sh").is_file(),
+            "in-place script must survive the same-path branch (not be wiped)"
+        );
+    }
+
+    /// Regression for issue #52 — the failure that the reporter actually
+    /// hit: `resolve_hooks_dir` resolved to a pre-existing but empty
+    /// data-local dir, so source == dest and there's nothing to verify.
+    /// The pre-fix code silently returned Ok with `copied = 0` and the
+    /// caller went on to rewrite `settings.json` against an empty dir,
+    /// disabling capture without any error. We must bail with an
+    /// actionable message instead.
+    #[test]
+    fn stage_hook_scripts_bails_when_source_equals_empty_dest() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        let agent_label = "stage-empty-in-place";
+        let in_place = data_dir.join("ai-memory/hooks").join(agent_label);
+        fs::create_dir_all(&in_place).unwrap();
+        // Intentionally no scripts in `in_place`.
+
+        let err = stage_hook_scripts_in(&in_place, agent_label, &data_dir)
+            .expect_err("an empty source dir must produce a hard error, not Ok(0)");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no hook scripts"),
+            "error should call out the empty source: {msg}"
+        );
+        assert!(
+            msg.contains("--hooks-dir") || msg.contains("setup-agent"),
+            "error should point at the workaround (--hooks-dir or setup-agent): {msg}"
+        );
+    }
+
+    /// Regression for issue #52 — same fail-on-zero guard applies even
+    /// when source and dest are different paths (e.g. user pointed
+    /// `--hooks-dir` at the wrong dir). Previously this also silently
+    /// returned Ok with `copied = 0`.
+    #[test]
+    fn stage_hook_scripts_bails_when_source_dir_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        let bundle = tmp.path().join("hooks");
+        let agent_src = bundle.join("stage-empty-src");
+        fs::create_dir_all(&agent_src).unwrap();
+        // Source dir exists but has no scripts.
+
+        let data_dir = tmp.path().join("data");
+        let err = stage_hook_scripts_in(&agent_src, "stage-empty-src", &data_dir)
+            .expect_err("zero scripts should be an error, not a silent success");
+        assert!(format!("{err:#}").contains("no hook scripts"));
     }
 
     #[test]
