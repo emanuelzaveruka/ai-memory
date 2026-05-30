@@ -217,21 +217,54 @@ would force O(N) scans on every auth request, where SHA-256 +
 `UNIQUE` index gives us the O(1) lookup the hot path needs.
 See `crates/ai-memory-store/src/users.rs` for the full rationale.
 
-## Where attribution shows up (today and soon)
+## Where attribution shows up
 
 | Surface | Status |
 |---|---|
-| Auth middleware injects `Extension<ActorContext>` on every request | ✓ shipping in P1.3 |
-| Admin user-management routes gate on `Extension<AuthLevel>::Root` | ✓ shipping in P1.4 |
-| `ai-memory user add/list/expire/revive/rotate-token` CLI | ✓ shipping in P1.5 |
-| `audit_log.author_id` populated on every write | ⏳ lands in P1.6 |
-| `pages.author_id` populated, frontmatter `last_modified_by` block | ⏳ lands in P1.6 |
-| `/api/v1` page responses include `author: { username, name?, email? }` | ⏳ lands in P1.7 |
-| Web UI shows author on page view + list views | ⏳ lands in P1.7 |
-| `install-hooks --as-user <name>` stamps per-user token into hook scripts | ⏳ lands in P1.8 |
+| Auth middleware injects `Extension<ActorContext>` on every request | ✓ P1.3 |
+| Admin user-management routes gate on `Extension<AuthLevel>::Root` | ✓ P1.4 |
+| `ai-memory user add/list/expire/revive/rotate-token` CLI | ✓ P1.5 |
+| `pages.author_id` populated, frontmatter `last_modified_by` block | ✓ P1.6 |
+| `/api/v1` page responses include `author: { username, name?, email? }` | ✓ P1.7 |
+| ETag invalidation on author change (so caches refresh attribution) | ✓ P1.7 |
+| `install-hooks --as-user <name>` metadata + flag validation | ✓ P1.8 |
+| Web UI shows author on page view + list views | ⏳ follow-up commit (data is already on `/api/v1`) |
+| `audit_log.author_id` populated on every write | ⏳ deferred (touches many ops; planned for next round) |
 
-This page is updated as each milestone merges; commit ids are
-recorded in `CHANGELOG.md`.
+Commit ids for each milestone are recorded in `CHANGELOG.md`.
+
+## Wiring agent hooks to a specific user
+
+After `ai-memory user add` prints a user's token, point that user's
+agent install at it via `install-hooks`:
+
+```console
+$ ai-memory user add --username alice --email alice@home --name "Alice Smith"
+✓ created user 'alice'
+  name:  Alice Smith
+  email: alice@home
+  ...
+
+XGq...<43-chars>...zRm    # the token, stdout only
+
+$ ai-memory install-hooks --apply --agent claude-code \
+    --as-user alice --auth-token XGq...<43-chars>...zRm
+[ai-memory] hooks installing for user: alice
+✓ staged 5 hook script(s) → ...
+```
+
+`--as-user` is **metadata only**: it labels the install for the
+operator's records and prints a confirmation line so you can verify
+which identity the next session's writes will attribute to. The
+actual token wired into the hook env block is whatever you pass via
+`--auth-token`. Mismatching the two (e.g. `--as-user alice
+--auth-token <bob's token>`) is permitted at the CLI layer; the
+server will resolve to bob at runtime. The flag is there to keep the
+operator honest, not to enforce.
+
+Without `--as-user`, hooks install the same way they always have —
+the bearer authenticates, attribution flows from the token's owner
+(root user or DB user) at write time.
 
 ## Limitations
 

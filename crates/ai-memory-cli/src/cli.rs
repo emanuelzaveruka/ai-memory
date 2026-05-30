@@ -756,6 +756,27 @@ pub struct InstallHooksArgs {
     /// is set there. Generate one with `ai-memory generate-auth-token`.
     #[arg(long, hide_env_values = true)]
     pub auth_token: Option<String>,
+    /// **Multi-user attribution (P1.8)**: stamp the installed hooks
+    /// with this username so the operator + the hook scripts both
+    /// know which registered user (from `ai-memory user add`) the
+    /// install is for. This flag is metadata — the actual token
+    /// stamped into the hook env block is whatever you pass via
+    /// `--auth-token`. Recommended workflow:
+    ///
+    /// ```bash
+    /// # 1. create the user (prints the token once)
+    /// ai-memory user add --username alice --email alice@home
+    ///
+    /// # 2. wire alice's token into the agent's hooks
+    /// ai-memory install-hooks --apply --agent claude-code \
+    ///     --as-user alice --auth-token <alice-token>
+    /// ```
+    ///
+    /// Without this flag, hooks are installed anonymously (same as
+    /// pre-v0.8 behaviour) — every write attributed to "anonymous"
+    /// or to `[auth].root_username` when the root token is reused.
+    #[arg(long)]
+    pub as_user: Option<String>,
     /// **Mutate** the selected agent's hook config in place instead of
     /// printing the snippet/plugin. Idempotent — replaces the ai-memory
     /// hook entries or generated plugin and preserves unrelated config
