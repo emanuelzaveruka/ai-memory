@@ -415,6 +415,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_is_accent_insensitive() {
+        // V13: an accent-free query matches accented stored text (PT-friendly).
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ws = store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+        let proj = store
+            .writer
+            .get_or_create_project(ws, "scratch", None)
+            .await
+            .unwrap();
+        store
+            .writer
+            .upsert_page(sample_page(
+                ws,
+                proj,
+                "notes/decisao.md",
+                "a descrição da sessão e a consolidação dos commits",
+            ))
+            .await
+            .unwrap();
+
+        let hits = store
+            .reader
+            .search_pages("descricao sessao".into(), 10)
+            .await
+            .unwrap();
+        assert!(
+            !hits.is_empty(),
+            "accent-free query must match accented stored text"
+        );
+    }
+
+    #[tokio::test]
     async fn search_boolean_or_still_works() {
         let tmp = TempDir::new().unwrap();
         let store = Store::open(tmp.path()).unwrap();
