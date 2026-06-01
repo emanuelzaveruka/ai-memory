@@ -209,7 +209,14 @@ impl OpenAiOAuthProvider {
             .post(CODEX_RESPONSES_URL)
             .bearer_auth(token.access.expose_secret())
             .header("content-type", "application/json")
-            .header("accept", "application/json")
+            .header(
+                "accept",
+                if body.stream {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+            )
             .header("openai-beta", "responses=experimental")
             .header("originator", "codex_cli_rs")
             .header("session_id", uuid::Uuid::new_v4().to_string())
@@ -226,9 +233,13 @@ impl OpenAiOAuthProvider {
                 body: truncate_with_ellipsis(&body, 1024),
             });
         }
-        resp.json::<CodexResponsesResponse>()
-            .await
-            .map_err(LlmError::from)
+        if body.stream {
+            parse_sse_response(&resp.text().await.map_err(LlmError::from)?)
+        } else {
+            resp.json::<CodexResponsesResponse>()
+                .await
+                .map_err(LlmError::from)
+        }
     }
 }
 
@@ -330,16 +341,93 @@ fn build_request<'a>(
         model,
         instructions: request.system.as_deref(),
         input,
-        max_output_tokens: Some(request.max_tokens),
+        // The ChatGPT/Codex backend currently rejects `max_output_tokens`
+        // for OAuth callers on this endpoint, so rely on the server default.
+        max_output_tokens: None,
         temperature: if model_uses_default_temperature(model) {
             None
         } else {
             request.temperature
         },
         store: false,
-        stream: false,
+        stream: true,
         text,
     }
+}
+
+fn parse_sse_response(body: &str) -> LlmResult<CodexResponsesResponse> {
+    let mut current_event: Option<String> = None;
+    let mut data_lines: Vec<&str> = Vec::new();
+    let mut output_text = String::new();
+    let mut completed: Option<CodexResponsesResponse> = None;
+
+    let mut flush_event = |event: Option<&str>, data_lines: &mut Vec<&str>| -> LlmResult<()> {
+        if data_lines.is_empty() {
+            return Ok(());
+        }
+        let data = data_lines.join("\n");
+        data_lines.clear();
+        let trimmed = data.trim();
+        if trimmed.is_empty() || trimmed == "[DONE]" {
+            return Ok(());
+        }
+
+        let value = serde_json::from_str::<serde_json::Value>(trimmed)?;
+        let kind = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .or(event)
+            .unwrap_or_default();
+        match kind {
+            "response.output_text.delta" => {
+                if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
+                    output_text.push_str(delta);
+                }
+            }
+            "response.completed" => {
+                let response = value.get("response").cloned().unwrap_or(value);
+                completed = Some(serde_json::from_value(response)?);
+            }
+            "response.failed" | "error" => {
+                return Err(LlmError::Provider {
+                    status: 502,
+                    body: truncate_with_ellipsis(trimmed, 1024),
+                });
+            }
+            _ => {}
+        }
+        Ok(())
+    };
+
+    for line in body.lines() {
+        if line.is_empty() {
+            flush_event(current_event.as_deref(), &mut data_lines)?;
+            current_event = None;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("event:") {
+            current_event = Some(rest.trim().to_string());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            data_lines.push(rest.trim_start());
+        }
+    }
+    flush_event(current_event.as_deref(), &mut data_lines)?;
+
+    let mut response = completed.ok_or_else(|| {
+        LlmError::UnexpectedShape("openai-oauth stream closed before response.completed".into())
+    })?;
+    if response
+        .output_text
+        .as_deref()
+        .unwrap_or_default()
+        .is_empty()
+        && !output_text.is_empty()
+    {
+        response.output_text = Some(output_text);
+    }
+    Ok(response)
 }
 
 fn model_uses_default_temperature(model: &str) -> bool {
@@ -632,9 +720,30 @@ mod tests {
         let value = serde_json::to_value(build_request("gpt-5.5", &request, None)).unwrap();
         assert_eq!(value["instructions"], "sys");
         assert_eq!(value["input"][0]["content"][0]["type"], "input_text");
+        assert!(value.get("max_output_tokens").is_none());
         assert!(value.get("temperature").is_none());
         assert_eq!(value["store"], false);
-        assert_eq!(value["stream"], false);
+        assert_eq!(value["stream"], true);
+    }
+
+    #[test]
+    fn parse_sse_response_reconstructs_completed_payload() {
+        let body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel\"}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3},\"output\":[]}}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let response = parse_sse_response(body).unwrap();
+        assert_eq!(response.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(response.output_text.as_deref(), Some("hello"));
+        let usage = response.usage.expect("usage from completed event");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 3);
     }
 
     #[test]

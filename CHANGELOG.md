@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `memory_read_page` now accepts explicit `workspace` + `project` for sibling
   projects and falls back to the stored DB body only when the markdown file is
   missing, not when the disk source of truth is corrupt or unreadable ([#63]).
+- `openai-oauth` now speaks the current ChatGPT/Codex responses stream format
+  for bootstrap/consolidation requests and avoids sending the unsupported
+  `max_output_tokens` field on that endpoint.
 
 ## [0.8.1] - 2026-05-30
 
