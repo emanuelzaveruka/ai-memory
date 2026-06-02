@@ -1026,6 +1026,95 @@ mod tests {
         assert!(counts.sessions >= 1, "recreated session must be persisted");
     }
 
+    /// The move-project hazard the (workspace_id, project_id) pairing trigger
+    /// exists for: when a cached project is MOVED to another workspace out from
+    /// under the router, the same `project_id` now belongs to a new workspace.
+    /// The next event must NOT silently write a split-brain row with the stale
+    /// workspace id — the trigger aborts that write, and the router evicts +
+    /// re-resolves into a consistent pair (exactly like the purge self-heal).
+    #[tokio::test]
+    async fn process_self_heals_when_cached_project_moved_workspaces() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        let cwd = "/home/user/move-project";
+
+        // 1) First event creates + caches the project (in the default workspace).
+        let env1 = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "user-prompt".into(),
+                agent: Some("claude-code".into()),
+                cwd: Some(cwd.into()),
+                ..Default::default()
+            },
+            serde_json::json!({ "sessionID": "move-sess-1" }),
+        );
+        process(&state, env1).await.unwrap();
+        let (ws, proj) =
+            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
+                .await
+                .unwrap();
+
+        // 2) Move the project to another workspace (re-stamp workspace_id, same
+        //    project_id) — the cache still points at (default_ws, proj), now a
+        //    cross-workspace stale pair.
+        let dst_ws = state
+            .writer
+            .get_or_create_workspace("archive".to_string())
+            .await
+            .unwrap();
+        state
+            .writer
+            .move_project_workspace(proj, ws, dst_ws)
+            .await
+            .unwrap();
+        assert!(
+            state
+                .project_cache
+                .lock()
+                .await
+                .values()
+                .any(|ids| *ids == (ws, proj)),
+            "cache still holds the moved project's stale (workspace, project) pair"
+        );
+
+        // 3) Next event with the same cwd must NOT create a split-brain row: the
+        //    stale (default_ws, proj) write trips the pairing trigger, the router
+        //    evicts + re-resolves, and the event lands cleanly.
+        let env2 = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "user-prompt".into(),
+                agent: Some("claude-code".into()),
+                cwd: Some(cwd.into()),
+                ..Default::default()
+            },
+            serde_json::json!({ "sessionID": "move-sess-2" }),
+        );
+        process(&state, env2)
+            .await
+            .expect("self-heal: stale cross-workspace pair must re-resolve, not write split-brain");
+
+        // 4) The moved project stayed in `dst_ws`; the cwd re-resolved to a
+        //    FRESH project back in the default workspace (never the stale pair).
+        assert_eq!(
+            state
+                .reader
+                .find_project(dst_ws, "move-project".to_string())
+                .await
+                .unwrap(),
+            Some(proj),
+            "moved project keeps its id in the destination workspace"
+        );
+        let (ws_new, proj_new) =
+            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
+                .await
+                .unwrap();
+        assert_eq!(ws_new, ws, "re-resolved back into the default workspace");
+        assert_ne!(
+            proj_new, proj,
+            "a fresh project replaced the moved one for this cwd"
+        );
+    }
+
     #[tokio::test]
     async fn process_self_heal_evicts_project_strategy_cache_slot() {
         let tmp = TempDir::new().unwrap();

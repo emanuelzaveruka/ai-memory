@@ -41,6 +41,8 @@ async fn make_state(tmp: &TempDir) -> (AdminState, Store) {
         bind: "127.0.0.1:0".to_string(),
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
+        active_project: ai_memory_core::ActiveProject::new(),
+        on_project_moved: None,
         db_path,
     };
     (state, store)
@@ -344,6 +346,8 @@ async fn purge_project_rejecting_admission_leaves_source_intact() {
         bind: "127.0.0.1:0".to_string(),
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
+        active_project: ai_memory_core::ActiveProject::new(),
+        on_project_moved: None,
     };
 
     let (ws, _keep, doomed) = seed_two_projects(&store, &state.wiki).await;
@@ -440,6 +444,8 @@ async fn purge_project_idempotent_second_call_is_404() {
         bind: "127.0.0.1:0".to_string(),
         bootstrap_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         token_pepper: None,
+        active_project: ai_memory_core::ActiveProject::new(),
+        on_project_moved: None,
     };
 
     seed_two_projects(&store, &state_a.wiki).await;

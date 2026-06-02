@@ -53,6 +53,10 @@ pub struct StoredPageBody {
     pub body: String,
     /// Raw `frontmatter_json` TEXT column (parse at the call site).
     pub frontmatter_json: String,
+    /// Memory tier stored on the latest page row.
+    pub tier: String,
+    /// Whether the latest page row is pinned.
+    pub pinned: bool,
 }
 
 /// Search hit with workspace/project names, used by the web UI to avoid
@@ -2630,7 +2634,7 @@ impl ReaderPool {
         self.with_conn(move |conn| {
             let row = conn
                 .query_row(
-                    "SELECT title, body, frontmatter_json FROM pages \
+                    "SELECT title, body, frontmatter_json, tier, pinned FROM pages \
                      WHERE workspace_id = ?1 AND project_id = ?2 AND path = ?3 \
                        AND is_latest = 1",
                     params![workspace_id.as_bytes(), project_id.as_bytes(), path],
@@ -2639,6 +2643,8 @@ impl ReaderPool {
                             title: row.get(0)?,
                             body: row.get(1)?,
                             frontmatter_json: row.get(2)?,
+                            tier: row.get(3)?,
+                            pinned: row.get::<_, i64>(4)? != 0,
                         })
                     },
                 )

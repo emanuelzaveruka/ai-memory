@@ -56,6 +56,10 @@ pub enum AdmissionOp {
     /// `remove_dir_all`). Carries the project (ctx), no page path. Lets a
     /// mirror remove the project's directory.
     PurgeProject,
+    /// A whole project is being moved between workspaces without changing its
+    /// project id. Carries source names in `workspace`/`project` and
+    /// destination names in `destination_workspace`/`destination_project`.
+    MoveProject,
 }
 
 impl AdmissionOp {
@@ -67,6 +71,7 @@ impl AdmissionOp {
             AdmissionOp::Consolidate => "consolidate",
             AdmissionOp::Delete => "delete",
             AdmissionOp::PurgeProject => "purge_project",
+            AdmissionOp::MoveProject => "move_project",
         }
     }
 }
@@ -136,6 +141,12 @@ pub struct AdmissionContext {
     /// (auto-filled from `project_id` when the wiki has a store reader).
     #[serde(default)]
     pub project: String,
+    /// Destination workspace name for project-level moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_workspace: Option<String>,
+    /// Destination project name for project-level moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_project: Option<String>,
     /// Identity of the actor that triggered the write. The canonical
     /// multi-user [`ai_memory_core::ActorContext`] (since the v0.8 merge);
     /// `Wiki::write_page` fills it from `WritePageRequest::actor` so the
@@ -354,11 +365,11 @@ impl AdmissionChain {
         Ok(())
     }
 
-    /// Notify webhooks of a delete / purge (`ctx.op` = `Delete` /
-    /// `PurgeProject`). Unlike [`Self::run`], there is no body to send or
-    /// mutate — the webhook acts on `ctx.op` + the (optional) page path, e.g.
-    /// a mirror `git rm`s the file or removes the project directory. Honours
-    /// the same skip-list, op-subscription, timeout, and failure policy.
+    /// Notify webhooks of a delete / purge / project move. Unlike
+    /// [`Self::run`], there is no body to send or mutate — the webhook acts on
+    /// `ctx.op` + the (optional) page path, e.g. a mirror `git rm`s the file,
+    /// removes a project directory, or renames it. Honours the same skip-list,
+    /// op-subscription, timeout, and failure policy.
     ///
     /// # Errors
     /// Returns an error only when a `Reject`-policy webhook fails.
@@ -538,6 +549,7 @@ mod tests {
     fn op_header_values() {
         assert_eq!(AdmissionOp::WritePage.as_header_value(), "write_page");
         assert_eq!(AdmissionOp::Consolidate.as_header_value(), "consolidate");
+        assert_eq!(AdmissionOp::MoveProject.as_header_value(), "move_project");
     }
 
     #[tokio::test]

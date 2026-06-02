@@ -48,6 +48,12 @@ pub enum StoreError {
     #[error("invalid project name: {0}")]
     InvalidProjectName(String),
 
+    /// A lookup expected a row that was not present (e.g. moving a project
+    /// that no longer exists in the source workspace — typically a race or
+    /// caller-invariant violation).
+    #[error("not found: {0}")]
+    NotFound(String),
+
     /// A UNIQUE constraint was violated by an insert (e.g. duplicate
     /// `users.username` / `users.email`). The string carries a
     /// human-readable explanation the CLI / admin endpoint surfaces

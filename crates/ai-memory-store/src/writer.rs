@@ -18,7 +18,7 @@ use rusqlite::Connection;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{StoreError, StoreResult};
-use crate::ops::{self, EmbeddingWrite, PurgeSummary, ReorgSummary};
+use crate::ops::{self, EmbeddingWrite, MoveSummary, PurgeSummary, ReorgSummary};
 use crate::users::{self, TOKEN_HASH_LEN};
 
 /// Commands accepted by the writer thread.
@@ -32,6 +32,11 @@ pub(crate) enum WriteCmd {
         name: String,
         repo_path: Option<String>,
         reply: oneshot::Sender<StoreResult<ProjectId>>,
+    },
+    EnsureProjectWorkspace {
+        workspace_id: WorkspaceId,
+        project_id: ProjectId,
+        reply: oneshot::Sender<StoreResult<()>>,
     },
     UpsertPage {
         page: NewPage,
@@ -118,6 +123,16 @@ pub(crate) enum WriteCmd {
         /// Human-readable `workspace/project` label forwarded into the summary.
         label: String,
         reply: oneshot::Sender<StoreResult<PurgeSummary>>,
+    },
+    /// Re-stamp a project's `workspace_id` across every domain table in one
+    /// transaction, keeping the same `project_id` (a lossless cross-workspace
+    /// "true move"). The caller renames the on-disk dir and ensures the
+    /// destination workspace row exists first.
+    MoveProjectWorkspace {
+        project_id: ProjectId,
+        from_workspace: WorkspaceId,
+        to_workspace: WorkspaceId,
+        reply: oneshot::Sender<StoreResult<MoveSummary>>,
     },
     /// Rename a project's `name` column without moving any files (the wiki
     /// is flat on disk). Fails with [`crate::error::StoreError::ProjectNameTaken`]
@@ -223,6 +238,27 @@ impl WriterHandle {
             workspace_id,
             name: name.into(),
             repo_path,
+            reply: tx,
+        })
+        .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
+    /// Assert that a project still belongs to the supplied workspace.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::NotFound`] when the `(workspace_id, project_id)`
+    /// pair is stale, [`StoreError::WriterClosed`] if the actor has shut down,
+    /// or propagates the SQL error.
+    pub async fn ensure_project_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        project_id: ProjectId,
+    ) -> StoreResult<()> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::EnsureProjectWorkspace {
+            workspace_id,
+            project_id,
             reply: tx,
         })
         .await?;
@@ -432,6 +468,36 @@ impl WriterHandle {
             workspace_id,
             project_id,
             label: label.into(),
+            reply: tx,
+        })
+        .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
+    /// Re-stamp a project's `workspace_id` to `to_workspace` across every
+    /// domain table in one transaction, keeping the same `project_id`. This is
+    /// the lossless cross-workspace move: pages, sessions, observations and
+    /// supersession history all follow. The destination workspace row must
+    /// already exist; the caller renames the on-disk dir afterwards.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::WriterClosed`] if the actor has shut down,
+    /// [`StoreError::NotFound`] if the project is absent from the source
+    /// workspace, or propagates the SQL error (e.g. a
+    /// `UNIQUE(workspace_id, name)` collision when the destination already
+    /// holds a same-named project — the caller routes that merge case to
+    /// copy+purge instead).
+    pub async fn move_project_workspace(
+        &self,
+        project_id: ProjectId,
+        from_workspace: WorkspaceId,
+        to_workspace: WorkspaceId,
+    ) -> StoreResult<MoveSummary> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::MoveProjectWorkspace {
+            project_id,
+            from_workspace,
+            to_workspace,
             reply: tx,
         })
         .await?;
@@ -691,6 +757,14 @@ fn worker_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriteCmd>) {
                 );
                 send_or_warn(reply, result, "get_or_create_project");
             }
+            WriteCmd::EnsureProjectWorkspace {
+                workspace_id,
+                project_id,
+                reply,
+            } => {
+                let result = ops::ensure_project_workspace(&conn, &workspace_id, &project_id);
+                send_or_warn(reply, result, "ensure_project_workspace");
+            }
             WriteCmd::UpsertPage { page, reply } => {
                 let result = ops::upsert_page(&mut conn, &page);
                 send_or_warn(reply, result, "upsert_page");
@@ -809,6 +883,20 @@ fn worker_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriteCmd>) {
             } => {
                 let result = ops::purge_project(&mut conn, &workspace_id, &project_id, &label);
                 send_or_warn(reply, result, "purge_project");
+            }
+            WriteCmd::MoveProjectWorkspace {
+                project_id,
+                from_workspace,
+                to_workspace,
+                reply,
+            } => {
+                let result = ops::move_project_workspace(
+                    &mut conn,
+                    &project_id,
+                    &from_workspace,
+                    &to_workspace,
+                );
+                send_or_warn(reply, result, "move_project_workspace");
             }
             WriteCmd::RenameProject {
                 workspace_id,

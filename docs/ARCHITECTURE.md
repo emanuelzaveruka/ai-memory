@@ -276,7 +276,8 @@ install-mcp          commit               llm-test
 forget-sweep         lint                 embed
 generate-auth-token  setup-agent          bootstrap
 install-instructions reorg                purge-project
-rename-project       uninstall            auth
+rename-project       move-project         uninstall
+auth
 ```
 
 Run `ai-memory --help` for the full tree.

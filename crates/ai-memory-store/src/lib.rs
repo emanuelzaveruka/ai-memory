@@ -25,7 +25,7 @@ pub use fts_query::prepare_fts5_query;
 
 pub use decay::{DecayParams, retention_score};
 pub use error::{StoreError, StoreResult};
-pub use ops::{EmbeddingWrite, PurgeSummary, ReorgSummary};
+pub use ops::{EmbeddingWrite, MoveSummary, PurgeSummary, ReorgSummary};
 pub use reader::{
     ActivityWindow, BriefingPage, BriefingSnapshot, DecayCandidate, DerivedIndexStatus,
     EmbeddingTripleCount, HealthDetail, HealthPage, ObservationHit, PageAuthor, PageHit,

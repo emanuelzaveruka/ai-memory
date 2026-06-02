@@ -79,7 +79,7 @@ priors are at the [bottom](#influences-and-prior-art).
   Server runs local (loopback) OR on a homelab box (LAN/VPN/cloud)
   with bearer-token auth.
 - **Thin-client CLI.** `ai-memory status`, `bootstrap`, `purge-project`,
-  `rename-project`, `lint`, `embed`, `forget-sweep`, `backup` are
+  `rename-project`, `move-project`, `lint`, `embed`, `forget-sweep`, `backup` are
   all HTTP clients of the running server - never touch SQLite or
   wiki files directly. `status` also reports passive LLM/embedding
   provider health from the last real provider call. Server is the

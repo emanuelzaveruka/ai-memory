@@ -190,6 +190,20 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                     .with_stateful_mode(args.http_stateful)
                     .with_json_response(!args.http_stateful),
             );
+            // Shared per-cwd project cache: the hook router owns it; the admin
+            // router gets a fire-and-forget eviction hook so a `move-project`
+            // can proactively drop the moved project's stale entries.
+            let project_cache: ai_memory_hooks::ProjectCache =
+                std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+            let on_project_moved: std::sync::Arc<dyn Fn(ProjectId) + Send + Sync> = {
+                let cache = project_cache.clone();
+                std::sync::Arc::new(move |proj: ProjectId| {
+                    let cache = cache.clone();
+                    tokio::spawn(async move {
+                        cache.lock().await.retain(|_, v| v.1 != proj);
+                    });
+                })
+            };
             let hooks = hook_router(HookState {
                 workspace_id: ws,
                 project_id: proj,
@@ -198,9 +212,7 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                 wiki: wiki.clone(),
                 consolidator: consolidator.clone(),
                 sanitizer: sanitizer.clone(),
-                project_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
-                    std::collections::HashMap::new(),
-                )),
+                project_cache: project_cache.clone(),
                 active_project: active_project.clone(),
                 ingest_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(
                     DEFAULT_HOOK_INGEST_MAX_IN_FLIGHT,
@@ -225,6 +237,8 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                     .as_ref()
                     .filter(|p| !p.trim().is_empty())
                     .map(|p| ai_memory_store::TokenPepper::new(p.clone())),
+                active_project: active_project.clone(),
+                on_project_moved: Some(on_project_moved),
             });
             // Multi-rung auth assembly:
             //   - rung 0 (no bearer_token configured) → AuthState::new

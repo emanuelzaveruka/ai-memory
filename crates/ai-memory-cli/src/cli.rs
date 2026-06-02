@@ -96,6 +96,13 @@ pub enum Command {
     /// Useful after renaming the project's directory on disk so the hook
     /// router keeps writing into the same logical project.
     RenameProject(RenameProjectArgs),
+    /// Move a project into another workspace. A fresh destination is a
+    /// lossless TRUE MOVE (re-stamp workspace_id, keep project_id, rename the
+    /// dir) — sessions/observations/handoffs and history all survive. A
+    /// destination that already holds a same-named project MERGES via
+    /// copy+purge (only durable pages migrate, source purged). Either way the
+    /// operation is irreversible — requires `--confirm`.
+    MoveProject(MoveProjectArgs),
     /// Remove ai-memory's wiring (hooks, MCP, instructions) from all
     /// detected agents. Dry-run unless `--apply`.
     Uninstall(UninstallArgs),
@@ -339,6 +346,38 @@ pub struct RenameProjectArgs {
     /// New project name. Must be non-empty and contain no slashes.
     #[arg(long)]
     pub to: String,
+}
+
+/// Arguments for `move-project`.
+#[derive(Debug, Args)]
+pub struct MoveProjectArgs {
+    /// Source workspace. Defaults to `default`.
+    #[arg(long, default_value_t = crate::config::DEFAULT_WORKSPACE.to_string())]
+    pub from_workspace: String,
+    /// Project name to move. When omitted, auto-derived from the basename
+    /// of the current git repo root (or CWD if no git repo).
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Destination workspace. Auto-created if it doesn't exist.
+    #[arg(long)]
+    pub to_workspace: String,
+    /// REQUIRED — the move re-stamps (true-move) or copies+purges (merge) the
+    /// source, both irreversible. Without this flag the CLI errors out.
+    #[arg(long)]
+    pub confirm: bool,
+    /// Override the live-session guard. By default the server refuses (409) to
+    /// move the project a hook session is actively writing to; `--force`
+    /// proceeds anyway (still safe — the move keeps the active pointer correct
+    /// and the schema rejects any stale write).
+    #[arg(long)]
+    pub force: bool,
+    /// Merge conflict policy (copy-purge path only): what to do when a source
+    /// page's path already exists in the destination with different content.
+    /// `block` (default) aborts and lists the conflicts; `overwrite` lets the
+    /// source supersede the destination page; `duplicate` keeps both (source
+    /// lands under a de-duplicated path).
+    #[arg(long, value_parser = ["block", "overwrite", "duplicate"], default_value = "block")]
+    pub on_conflict: String,
 }
 
 /// Arguments for `install-instructions`.

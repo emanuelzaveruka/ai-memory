@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- `ai-memory move-project` can move projects across workspaces via the admin
+  API. Fresh destinations use a lossless true move that keeps the same
+  `project_id`, sessions, observations, handoffs, embeddings, and page history;
+  existing same-named destination projects use copy-purge merge with explicit
+  `on_conflict` handling. Admission webhooks can subscribe to the new
+  `move_project` event and receive destination names in the context ([#60]).
 - Page FTS now indexes normalized page paths, so searches can find pages by
   filename or slug even when the slug does not appear in the title/body ([#62]).
 - Admission webhooks can now observe, mutate, or reject engine write/delete/
@@ -18,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before removal ([#55]).
 
 ### Fixed
+- `move-project` true moves now run through a wiki mutation gate: normal
+  page writes/reindexes validate the `(workspace_id, project_id)` pair before
+  touching disk, while true moves hold the exclusive side across the directory
+  rename and DB re-stamp. Stale old-workspace writes now fail without creating
+  orphan files, and V18 aborts if existing split-brain rows are present ([#60]).
+- `move-project` copy-purge conflict detection now treats body, frontmatter,
+  title, tier, and pinned status as the page identity under `on_conflict=block`,
+  preventing metadata-only overwrites from slipping through ([#60]).
 - `memory_write_page` calls that specify `project` without `workspace` now
   default to the active workspace published by hooks, and project-only reads use
   the same active-workspace resolution so the write can be read back without an
