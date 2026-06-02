@@ -829,6 +829,78 @@ mod tests {
         );
     }
 
+    /// Audit BLOCKING fix: a `data: {"error":{...}}` event without a
+    /// `type` field and without a preceding `event:` header used to
+    /// fall through the kind-dispatch silently. Now any top-level
+    /// `error` payload is promoted to a terminal error so the real
+    /// upstream failure reaches the caller.
+    #[test]
+    fn parse_sse_response_promotes_top_level_error_without_event_header() {
+        let body = "data: {\"error\":{\"message\":\"context length exceeded\"}}\n\n";
+        let err = parse_sse_response(body)
+            .expect_err("top-level error payload must surface as a terminal error");
+        match err {
+            LlmError::Provider { status, body } => {
+                assert_eq!(status, super::SSE_TERMINAL_ERROR_STATUS);
+                assert!(
+                    body.contains("context length exceeded"),
+                    "body must carry upstream error message: {body}"
+                );
+            }
+            other => panic!("expected Provider error, got {other:?}"),
+        }
+    }
+
+    /// Audit BLOCKING fix: a stream that ends mid-`data:` JSON (the
+    /// upstream socket closes before the closing brace) used to surface
+    /// as a generic serde parse error. The post-loop flush now catches
+    /// that case when no `response.completed` event has arrived and
+    /// emits the actionable "stream truncated" diagnostic.
+    #[test]
+    fn parse_sse_response_truncated_data_surfaces_as_truncated_stream() {
+        // `data:` line carrying an unterminated JSON object, no blank
+        // line after — the post-loop flush is what runs.
+        let body = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hel";
+        let err = parse_sse_response(body).expect_err("truncated stream must fail");
+        assert!(
+            err.to_string()
+                .contains("stream truncated before final event closed"),
+            "expected truncation-aware error, got: {err}"
+        );
+    }
+
+    /// Empty body — no `data:` lines at all — falls through to the
+    /// `completed.is_none()` branch with the original
+    /// "stream closed before response.completed" error.
+    #[test]
+    fn parse_sse_response_empty_body_reports_no_completed_event() {
+        let err = parse_sse_response("").expect_err("empty body must fail");
+        assert!(
+            err.to_string()
+                .contains("stream closed before response.completed"),
+            "expected canonical 'no completed' error, got: {err}"
+        );
+    }
+
+    /// SSE spec allows an event to carry multiple `data:` lines; the
+    /// parser joins them with `\n` before JSON-decoding. Exercise the
+    /// continuation path so a future refactor doesn't drop it.
+    #[test]
+    fn parse_sse_response_handles_multi_line_data_continuation() {
+        // Real upstreams sometimes split a wide JSON object across
+        // multiple `data:` lines; the parser joins on '\n' before
+        // serde_json parses, so a JSON value spanning newlines must
+        // survive (here we exercise a JSON STRING that contains a
+        // literal newline, which IS valid serde input).
+        let body = concat!(
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.5\",\"output_text\":\"line1\\nline2\",\"output\":[]}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let resp = parse_sse_response(body).expect("multi-line content must parse");
+        assert_eq!(resp.output_text.as_deref(), Some("line1\nline2"));
+    }
+
     #[test]
     fn structured_request_uses_responses_json_schema_format() {
         let request = ChatRequest::user_prompt("json please");
