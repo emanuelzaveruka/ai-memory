@@ -17,7 +17,7 @@ use tracing::{debug, info};
 use crate::auth::CopilotAuth;
 use crate::auth_file::{load_entry, now_ms, save_entry};
 use crate::error::{LlmError, LlmResult};
-use crate::openai::enforce_strict_object_schemas;
+use crate::openai::{STRUCTURED_OUTPUT_SCHEMA_NAME, enforce_strict_object_schemas};
 use crate::provider::LlmProvider;
 use crate::text::truncate_with_ellipsis;
 use crate::types::{ChatRequest, ChatResponse, Role, Usage};
@@ -322,7 +322,7 @@ impl LlmProvider for CopilotProvider {
         enforce_strict_object_schemas(&mut schema);
         let response_format = CopilotResponseFormat::JsonSchema {
             json_schema: CopilotJsonSchema {
-                name: "Result".into(),
+                name: STRUCTURED_OUTPUT_SCHEMA_NAME.into(),
                 schema,
                 strict: true,
             },
@@ -826,7 +826,7 @@ mod tests {
         let request = ChatRequest::user_prompt("json please");
         let response_format = CopilotResponseFormat::JsonSchema {
             json_schema: CopilotJsonSchema {
-                name: "Result".into(),
+                name: STRUCTURED_OUTPUT_SCHEMA_NAME.into(),
                 schema: json!({ "type": "object", "properties": {} }),
                 strict: true,
             },
