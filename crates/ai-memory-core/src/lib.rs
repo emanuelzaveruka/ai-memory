@@ -22,7 +22,9 @@ pub const DEFAULT_WORKSPACE_NAME: &str = "default";
 /// Defensive project fallback used only when no cwd/project is available.
 pub const DEFAULT_PROJECT_NAME: &str = "scratch";
 
-pub use active_project::ActiveProject;
+pub use active_project::{
+    ActiveProject, ActiveProjectMode, ActorKey, DEFAULT_MAX_ENTRIES, DEFAULT_PER_KEY_TTL,
+};
 pub use actor::{ActorContext, AuthLevel};
 pub use error::{MemoryError, MemoryResult};
 pub use handoff::{Handoff, HandoffState, NewHandoff};

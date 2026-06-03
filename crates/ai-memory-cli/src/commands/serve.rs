@@ -126,7 +126,21 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
     // answers for the project the agent is actually in, not the static
     // `--project` (issue #2). In stdio mode no hook router is built, so
     // this stays empty and the baked-in default is used.
-    let active_project = ActiveProject::new();
+    // Construct ActiveProject with the configured `[auto_scope]` mode +
+    // TTL/cap. `single` (default) preserves the legacy behaviour; the
+    // opt-in modes (`per_session`, `per_actor`) keyed-isolate concurrent
+    // sessions / operators on shared installs.
+    let active_project = ActiveProject::with_config(
+        config.auto_scope.mode,
+        std::time::Duration::from_secs(config.auto_scope.session_ttl_secs),
+        config.auto_scope.max_entries,
+    );
+    tracing::info!(
+        mode = ?config.auto_scope.mode,
+        session_ttl_secs = config.auto_scope.session_ttl_secs,
+        max_entries = config.auto_scope.max_entries,
+        "active-project isolation mode"
+    );
     let mut server = AiMemoryServer::new(store.reader.clone(), store.writer.clone(), ws, proj)
         .with_wiki(wiki.clone())
         .with_decay_params(config.decay)

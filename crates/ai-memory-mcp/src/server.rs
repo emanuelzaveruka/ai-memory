@@ -537,16 +537,66 @@ impl AiMemoryServer {
         self
     }
 
+    /// Build the [`ActorKey`] for a tool call from the request's stored
+    /// extensions. When the auth middleware has attached an
+    /// [`ai_memory_core::ActorContext`] (rung 1 root, rung 2 DB user), its
+    /// `user` field is used; the `session_id` comes from the same
+    /// extension when the agent's MCP client forwards it, otherwise stays
+    /// `None` and the per-actor lookup gracefully degrades to the single
+    /// slot under `[auto_scope] mode = single` (the default).
+    ///
+    /// Threading parts into every read tool is mechanical but wide; the
+    /// helper is kept here so a follow-up commit can opt each tool in
+    /// without re-doing the design — the wrapper [`Self::effective_ids`] /
+    /// [`Self::effective_ids_for_read_args`] keep working unchanged while
+    /// the migration is in progress.
+    #[allow(dead_code)]
+    fn actor_key_from_parts(
+        parts: Option<&axum::http::request::Parts>,
+    ) -> ai_memory_core::ActorKey {
+        let Some(parts) = parts else {
+            return ai_memory_core::ActorKey::default();
+        };
+        let ctx = parts.extensions.get::<ai_memory_core::ActorContext>();
+        match ctx {
+            None => ai_memory_core::ActorKey::default(),
+            Some(ctx) => ai_memory_core::ActorKey {
+                user: ctx.user.clone(),
+                session_id: ctx.session_id.clone(),
+            },
+        }
+    }
+
     /// Resolve which `(workspace_id, project_id)` a read tool should
     /// query. Precedence (matches the documented resolution chain):
     ///   1. an explicit `project` name argument in the active workspace
-    ///      when hooks have published one,
+    ///      when hooks have published one (for THIS actor),
     ///   2. that same explicit `project` in the server's baked workspace,
     ///   3. the hook-published [`ActiveProject`] (the cwd the agent is
-    ///      currently working in),
+    ///      currently working in, keyed by `actor` in opt-in isolation
+    ///      modes),
     ///   4. the server's baked-in `--project` default.
+    ///
+    /// `actor` is built by [`Self::actor_key_from_parts`]; pass
+    /// `ActorKey::default()` when the call site has no request context.
+    /// Empty actor → fall back to the single slot (legacy behaviour).
+    /// Backward-compatible wrapper for call sites that have not yet
+    /// threaded a request `Parts` extension. Behaves like the historical
+    /// `effective_ids` — i.e. consults the single slot only — which is
+    /// what every tool gets under the default `[auto_scope] mode = single`.
+    /// Opt-in modes (`per_session` / `per_actor`) gain proper isolation as
+    /// each tool gets migrated to [`Self::effective_ids_with_actor`].
     async fn effective_ids(&self, explicit_project: Option<&str>) -> (WorkspaceId, ProjectId) {
-        let active = self.active_project.get();
+        self.effective_ids_with_actor(explicit_project, &ai_memory_core::ActorKey::default())
+            .await
+    }
+
+    async fn effective_ids_with_actor(
+        &self,
+        explicit_project: Option<&str>,
+        actor: &ai_memory_core::ActorKey,
+    ) -> (WorkspaceId, ProjectId) {
+        let active = self.active_project.get_for(actor);
         if let Some(name) = explicit_project.map(str::trim).filter(|s| !s.is_empty()) {
             if let Some((active_ws, _)) = active
                 && let Ok(Some(pid)) = self.reader.find_project(active_ws, name.to_string()).await
@@ -565,10 +615,25 @@ impl AiMemoryServer {
         active.unwrap_or((self.workspace_id, self.project_id))
     }
 
+    /// Backward-compatible wrapper paired with [`Self::effective_ids`].
     async fn effective_ids_for_read_args(
         &self,
         explicit_workspace: Option<&str>,
         explicit_project: Option<&str>,
+    ) -> Result<(WorkspaceId, ProjectId), McpError> {
+        self.effective_ids_for_read_args_with_actor(
+            explicit_workspace,
+            explicit_project,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+    }
+
+    async fn effective_ids_for_read_args_with_actor(
+        &self,
+        explicit_workspace: Option<&str>,
+        explicit_project: Option<&str>,
+        actor: &ai_memory_core::ActorKey,
     ) -> Result<(WorkspaceId, ProjectId), McpError> {
         match (
             trimmed_opt(explicit_workspace),
@@ -579,7 +644,7 @@ impl AiMemoryServer {
                 "workspace and project must be provided together",
                 None,
             )),
-            (None, project) => Ok(self.effective_ids(project).await),
+            (None, project) => Ok(self.effective_ids_with_actor(project, actor).await),
         }
     }
 

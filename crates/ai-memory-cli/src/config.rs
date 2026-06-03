@@ -101,6 +101,12 @@ pub struct Config {
     /// `AI_MEMORY_AUTH_TOKEN` env var or `[auth].bearer_token` in
     /// config.toml.
     pub auth: AuthSettings,
+    /// `[auto_scope]` — opt-in isolation of the hook-published "current
+    /// project" pointer used by MCP tools that omit `workspace`/`project`.
+    /// Default `single` mode preserves the legacy global slot; `per_session`
+    /// and `per_actor` are for shared installs. See [`AutoScopeSettings`]
+    /// and [`ai_memory_core::ActiveProjectMode`].
+    pub auto_scope: AutoScopeSettings,
     /// `Host`-header allowlist for the HTTP server. Requests whose
     /// `Host` header doesn't match this list are rejected before they
     /// reach MCP, hook, admin, or web routes (DNS-rebinding defence).
@@ -274,6 +280,39 @@ pub struct AuthSettings {
     pub token_pepper: Option<String>,
 }
 
+/// `[auto_scope]` — controls how the hook-published "currently active
+/// project" pointer is shared across concurrent callers. The legacy default
+/// is `single` (process-wide slot, last-write-wins). Opt-in modes isolate
+/// concurrent agent runs and/or operators.
+///
+/// Set under `[auto_scope]` in `config.toml` or via the
+/// `AI_MEMORY_AUTO_SCOPE__MODE`, `AI_MEMORY_AUTO_SCOPE__SESSION_TTL_SECS`,
+/// and `AI_MEMORY_AUTO_SCOPE__MAX_ENTRIES` env vars.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoScopeSettings {
+    /// `single` (default), `per_session`, or `per_actor`. See
+    /// [`ai_memory_core::ActiveProjectMode`] for full semantics.
+    pub mode: ai_memory_core::ActiveProjectMode,
+    /// TTL (seconds) for per-key entries in `per_session`/`per_actor`
+    /// modes. Default is 1 hour. Set to 0 to fall back to the default.
+    pub session_ttl_secs: u64,
+    /// Hard upper bound on the per-key map size, evicting the oldest
+    /// insertions first. Default 4096; lower for very small installs,
+    /// raise for shared engines with many concurrent agents.
+    pub max_entries: usize,
+}
+
+impl Default for AutoScopeSettings {
+    fn default() -> Self {
+        Self {
+            mode: ai_memory_core::ActiveProjectMode::default(),
+            session_ttl_secs: ai_memory_core::DEFAULT_PER_KEY_TTL.as_secs(),
+            max_entries: ai_memory_core::DEFAULT_MAX_ENTRIES,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -294,6 +333,7 @@ impl Default for Config {
             maintenance: MaintenanceSettings::default(),
             sanitize: ai_memory_core::SanitizeConfig::default(),
             auth: AuthSettings::default(),
+            auto_scope: AutoScopeSettings::default(),
             allowed_hosts: vec!["localhost".into(), "127.0.0.1".into(), "::1".into()],
             cors_allow_origins: Vec::new(),
             admission_webhooks: Vec::new(),

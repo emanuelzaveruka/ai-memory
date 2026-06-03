@@ -192,16 +192,25 @@ pub fn hook_router(state: HookState) -> Router {
 async fn handle_hook(
     State(state): State<Arc<HookState>>,
     Query(query): Query<HookQuery>,
+    actor_ext: Option<axum::Extension<ai_memory_core::ActorContext>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let env = HookEnvelope::from_query_and_body(query, body);
+    // The auth middleware in front of `/hook` injects the request's
+    // [`ActorContext`] (rung 1 root, rung 2 DB user, or anonymous). We
+    // capture its `user` field NOW — before the spawn drops the request
+    // extensions — so `process()` can key the `ActiveProject` map by the
+    // authenticated identity when `[auto_scope] mode = per_actor` is on.
+    let actor_user = actor_ext
+        .map(|axum::Extension(ctx)| ctx.user)
+        .unwrap_or_default();
     let Ok(permit) = state.ingest_semaphore.clone().try_acquire_owned() else {
         warn!("hook ingest saturated; dropping event with 429");
         return (StatusCode::TOO_MANY_REQUESTS, "hook queue full");
     };
     tokio::spawn(async move {
         let _permit = permit;
-        process_envelope(state, env).await;
+        process_envelope(state, env, actor_user).await;
     });
     (StatusCode::ACCEPTED, "queued")
 }
@@ -240,8 +249,12 @@ pub struct HandoffQuery {
 async fn handle_handoff(
     State(state): State<Arc<HookState>>,
     Query(query): Query<HandoffQuery>,
+    actor_ext: Option<axum::Extension<ai_memory_core::ActorContext>>,
 ) -> impl IntoResponse {
-    match fetch_and_accept_handoff(&state, query).await {
+    let actor_user = actor_ext
+        .map(|axum::Extension(ctx)| ctx.user)
+        .unwrap_or_default();
+    match fetch_and_accept_handoff(&state, query, actor_user).await {
         Ok(Some(markdown)) => (StatusCode::OK, markdown),
         Ok(None) => (StatusCode::OK, String::new()),
         Err(e) => {
@@ -254,14 +267,23 @@ async fn handle_handoff(
 async fn fetch_and_accept_handoff(
     state: &HookState,
     query: HandoffQuery,
+    actor_user: Option<String>,
 ) -> anyhow::Result<Option<String>> {
     let agent = query.agent.as_deref().map_or(AgentKind::Other, parse_agent);
+    // `/handoff` has no session_id in the request — `per_session` mode
+    // therefore falls back to the single slot (graceful degradation),
+    // while `per_actor` keys by `user` alone.
+    let actor_key = ai_memory_core::ActorKey {
+        user: actor_user,
+        session_id: None,
+    };
     let (ws, proj) = resolve_project_ids(
         state,
         query.cwd.as_deref(),
         query.workspace.as_deref(),
         query.project.as_deref(),
         ProjectStrategy::parse(query.project_strategy.as_deref()),
+        &actor_key,
     )
     .await?;
     let handoff = state
@@ -374,6 +396,7 @@ async fn resolve_project_ids(
     workspace_override: Option<&str>,
     project_override: Option<&str>,
     project_strategy: ProjectStrategy,
+    actor: &ai_memory_core::ActorKey,
 ) -> anyhow::Result<(WorkspaceId, ProjectId)> {
     let cwd_norm = cwd.filter(|s| !s.is_empty()).map(str::to_string);
 
@@ -395,8 +418,10 @@ async fn resolve_project_ids(
         if let Some(ids) = cache.get(&cache_key) {
             // Republish on every hit: a cache hit still means the agent
             // is active in this project *now*, which is exactly what the
-            // MCP read tools need as their default.
-            state.active_project.set(ids.0, ids.1);
+            // MCP read tools need as their default. Keyed by the actor so
+            // opt-in isolation modes (`per_session`/`per_actor`) keep
+            // concurrent callers separated.
+            state.active_project.set_for(actor, ids.0, ids.1);
             return Ok(ids);
         }
     }
@@ -412,7 +437,7 @@ async fn resolve_project_ids(
             None => {
                 state
                     .active_project
-                    .set(state.workspace_id, state.project_id);
+                    .set_for(actor, state.workspace_id, state.project_id);
                 return Ok((state.workspace_id, state.project_id));
             }
         },
@@ -425,7 +450,7 @@ async fn resolve_project_ids(
             // message.
             state
                 .active_project
-                .set(state.workspace_id, state.project_id);
+                .set_for(actor, state.workspace_id, state.project_id);
             return Ok((state.workspace_id, state.project_id));
         }
     };
@@ -466,24 +491,37 @@ async fn resolve_project_ids(
         .map_err(|e| anyhow::anyhow!("get_or_create_project: {e}"))?;
     let ids = (ws, proj);
     state.project_cache.lock().await.insert(cache_key, ids);
-    state.active_project.set(ws, proj);
+    state.active_project.set_for(actor, ws, proj);
     Ok(ids)
 }
 
-async fn process_envelope(state: Arc<HookState>, env: HookEnvelope) {
-    if let Err(e) = process(&state, env).await {
+async fn process_envelope(state: Arc<HookState>, env: HookEnvelope, actor_user: Option<String>) {
+    if let Err(e) = process(&state, env, actor_user).await {
         warn!(error = %e, "hook processing failed");
     }
 }
 
-async fn process(state: &HookState, env: HookEnvelope) -> anyhow::Result<()> {
+async fn process(
+    state: &HookState,
+    env: HookEnvelope,
+    actor_user: Option<String>,
+) -> anyhow::Result<()> {
     let session_id = resolve_session_id(&env)?;
+    // Build the actor key used to scope the in-process `ActiveProject`
+    // pointer. `user` is whatever the auth middleware extracted from this
+    // request; `session_id` comes from the envelope. Empty actor (anonymous
+    // + no session) is allowed — `set_for` falls back to the single slot.
+    let actor_key = ai_memory_core::ActorKey {
+        user: actor_user.clone(),
+        session_id: Some(session_id.to_string()),
+    };
     let (mut ws, mut proj) = resolve_project_ids(
         state,
         env.cwd.as_deref(),
         env.workspace_override.as_deref(),
         env.project_override.as_deref(),
         env.project_strategy,
+        &actor_key,
     )
     .await?;
 
@@ -519,6 +557,7 @@ async fn process(state: &HookState, env: HookEnvelope) -> anyhow::Result<()> {
             env.workspace_override.as_deref(),
             env.project_override.as_deref(),
             env.project_strategy,
+            &actor_key,
         )
         .await?;
         ws = refreshed.0;
@@ -895,6 +934,7 @@ mod tests {
             None,
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -905,6 +945,7 @@ mod tests {
             None,
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -935,6 +976,7 @@ mod tests {
                 agent: Some("claude-code".into()),
                 ..Default::default()
             }),
+            None,
             Json(serde_json::json!({})),
         )
         .await
@@ -949,17 +991,30 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let state = make_state(&tmp).await;
 
-        let (ws, proj) = resolve_project_ids(&state, None, None, None, ProjectStrategy::Basename)
-            .await
-            .unwrap();
+        let (ws, proj) = resolve_project_ids(
+            &state,
+            None,
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(ws, state.workspace_id);
         assert_eq!(proj, state.project_id);
 
         // Likewise for an empty string.
-        let (ws2, proj2) =
-            resolve_project_ids(&state, Some(""), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (ws2, proj2) = resolve_project_ids(
+            &state,
+            Some(""),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(ws2, state.workspace_id);
         assert_eq!(proj2, state.project_id);
 
@@ -974,10 +1029,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let state = make_state(&tmp).await;
 
-        let (ws, proj) =
-            resolve_project_ids(&state, Some("/"), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (ws, proj) = resolve_project_ids(
+            &state,
+            Some("/"),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(ws, state.workspace_id);
         assert_eq!(proj, state.project_id);
         assert_eq!(state.active_project.get(), Some((ws, proj)));
@@ -1010,10 +1071,16 @@ mod tests {
         let cwd = "/home/user/cached-project";
 
         // First call — populates the cache.
-        let (_, proj_first) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (_, proj_first) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
 
         // Inspect the cache: should have exactly one entry.
         {
@@ -1032,10 +1099,16 @@ mod tests {
         }
 
         // Second call — must return the same IDs from the cache.
-        let (_, proj_second) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (_, proj_second) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(proj_first, proj_second, "cache must return identical IDs");
 
         // Cache must still have exactly one entry (no duplicate insert).
@@ -1086,11 +1159,17 @@ mod tests {
             },
             serde_json::json!({ "sessionID": "heal-sess-1" }),
         );
-        process(&state, env1).await.unwrap();
-        let (ws, proj) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        process(&state, env1, None).await.unwrap();
+        let (ws, proj) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
 
         // 2) Purge the project — the DB row is gone but the cache still
         //    points at it (exactly the purge-on-live-server scenario).
@@ -1120,15 +1199,21 @@ mod tests {
             },
             serde_json::json!({ "sessionID": "heal-sess-2" }),
         );
-        process(&state, env2)
+        process(&state, env2, None)
             .await
             .expect("self-heal: stale cached project must be recreated, not FK-fail");
 
         // 4) The project was recreated (fresh id) and the event landed.
-        let (_, proj_new) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (_, proj_new) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         assert_ne!(
             proj_new, proj,
             "purged project must be replaced by a fresh one"
@@ -1159,11 +1244,17 @@ mod tests {
             },
             serde_json::json!({ "sessionID": "move-sess-1" }),
         );
-        process(&state, env1).await.unwrap();
-        let (ws, proj) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        process(&state, env1, None).await.unwrap();
+        let (ws, proj) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
 
         // 2) Move the project to another workspace (re-stamp workspace_id, same
         //    project_id) — the cache still points at (default_ws, proj), now a
@@ -1200,7 +1291,7 @@ mod tests {
             },
             serde_json::json!({ "sessionID": "move-sess-2" }),
         );
-        process(&state, env2)
+        process(&state, env2, None)
             .await
             .expect("self-heal: stale cross-workspace pair must re-resolve, not write split-brain");
 
@@ -1215,10 +1306,16 @@ mod tests {
             Some(proj),
             "moved project keeps its id in the destination workspace"
         );
-        let (ws_new, proj_new) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (ws_new, proj_new) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(ws_new, ws, "re-resolved back into the default workspace");
         assert_ne!(
             proj_new, proj,
@@ -1247,11 +1344,17 @@ mod tests {
             },
             serde_json::json!({ "sessionID": "heal-repo-root-1" }),
         );
-        process(&state, env1).await.unwrap();
-        let (ws, proj) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::RepoRoot)
-                .await
-                .unwrap();
+        process(&state, env1, None).await.unwrap();
+        let (ws, proj) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
 
         state
             .writer
@@ -1269,14 +1372,20 @@ mod tests {
             },
             serde_json::json!({ "sessionID": "heal-repo-root-2" }),
         );
-        process(&state, env2)
+        process(&state, env2, None)
             .await
             .expect("repo-root cache slot must be evicted and recreated");
 
-        let (_, proj_new) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::RepoRoot)
-                .await
-                .unwrap();
+        let (_, proj_new) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         assert_ne!(proj_new, proj);
     }
 
@@ -1300,7 +1409,7 @@ mod tests {
             }),
         );
 
-        process(&state, env).await.unwrap();
+        process(&state, env, None).await.unwrap();
 
         // The observation must be in the project derived from the cwd,
         // not in the server-default `scratch` project.
@@ -1310,6 +1419,7 @@ mod tests {
             None,
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1340,7 +1450,7 @@ mod tests {
                 },
                 serde_json::json!({ "session_id": sid }),
             );
-            process(&state, env).await.unwrap();
+            process(&state, env, None).await.unwrap();
         }
 
         let pages = state
@@ -1375,7 +1485,7 @@ mod tests {
             }),
         );
 
-        process(&state, env).await.unwrap();
+        process(&state, env, None).await.unwrap();
 
         let counts = state.reader.status_counts().await.unwrap();
         assert_eq!(counts.sessions, 1);
@@ -1403,7 +1513,7 @@ mod tests {
         );
         let session_id = resolve_session_id(&env).unwrap();
 
-        process(&state, env).await.unwrap();
+        process(&state, env, None).await.unwrap();
 
         let observations = state
             .reader
@@ -1445,7 +1555,7 @@ mod tests {
         );
         let session_id = resolve_session_id(&env).unwrap();
 
-        process(&state, env).await.unwrap();
+        process(&state, env, None).await.unwrap();
 
         let observations = state
             .reader
@@ -1484,6 +1594,7 @@ mod tests {
             None,
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1493,6 +1604,7 @@ mod tests {
             Some("movvia"),
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1515,6 +1627,7 @@ mod tests {
             Some("acme"),
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1544,6 +1657,7 @@ mod tests {
                 project: None,
                 project_strategy: None,
             },
+            None,
         )
         .await
         .unwrap();
@@ -1560,10 +1674,16 @@ mod tests {
         let state = make_state(&tmp).await;
         let cwd = "/home/u/plain-repo";
 
-        let (ws, proj) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (ws, proj) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         state
             .writer
             .insert_handoff(NewHandoff {
@@ -1590,6 +1710,7 @@ mod tests {
                 project: None,
                 project_strategy: None,
             },
+            None,
         )
         .await
         .unwrap();
@@ -1615,6 +1736,7 @@ mod tests {
             None,
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1624,6 +1746,7 @@ mod tests {
             None,
             Some("pe-portais"),
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1648,6 +1771,7 @@ mod tests {
             Some("acme"),
             Some("api"),
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1657,6 +1781,7 @@ mod tests {
             Some("acme"),
             Some("api"),
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1675,16 +1800,23 @@ mod tests {
         let state = make_state(&tmp).await;
         let cwd = "/home/u/poison-test";
 
-        let (ws_default, _) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (ws_default, _) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         let (ws_movvia, _) = resolve_project_ids(
             &state,
             Some(cwd),
             Some("movvia"),
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1716,6 +1848,7 @@ mod tests {
             Some("acme"),
             Some("api"),
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1751,23 +1884,36 @@ mod tests {
         std::fs::create_dir_all(&app_dir).unwrap();
         let app_cwd = app_dir.to_str().unwrap();
 
-        let (_, proj_basename) =
-            resolve_project_ids(&state, Some(app_cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (_, proj_basename) = resolve_project_ids(
+            &state,
+            Some(app_cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         let (_, proj_explicit_app) = resolve_project_ids(
             &state,
             Some(main_dir.to_str().unwrap()),
             None,
             Some("app"),
             ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
-        let (_, proj_repo_root) =
-            resolve_project_ids(&state, Some(app_cwd), None, None, ProjectStrategy::RepoRoot)
-                .await
-                .unwrap();
+        let (_, proj_repo_root) = resolve_project_ids(
+            &state,
+            Some(app_cwd),
+            None,
+            None,
+            ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             proj_basename, proj_explicit_app,
@@ -1790,16 +1936,23 @@ mod tests {
         std::fs::create_dir_all(&app_dir).unwrap();
         let app_cwd = app_dir.to_str().unwrap();
 
-        let (_, proj_repo_root) =
-            resolve_project_ids(&state, Some(app_cwd), None, None, ProjectStrategy::RepoRoot)
-                .await
-                .unwrap();
+        let (_, proj_repo_root) = resolve_project_ids(
+            &state,
+            Some(app_cwd),
+            None,
+            None,
+            ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         let (_, proj_override_repo_root) = resolve_project_ids(
             &state,
             Some(app_cwd),
             None,
             Some("manual"),
             ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1809,6 +1962,7 @@ mod tests {
             None,
             Some("manual"),
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1831,14 +1985,26 @@ mod tests {
         std::fs::create_dir_all(&app_dir).unwrap();
         let app_cwd = app_dir.to_str().unwrap();
 
-        let (_, proj_basename) =
-            resolve_project_ids(&state, Some(app_cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
-        let (_, proj_repo_root) =
-            resolve_project_ids(&state, Some(app_cwd), None, None, ProjectStrategy::RepoRoot)
-                .await
-                .unwrap();
+        let (_, proj_basename) = resolve_project_ids(
+            &state,
+            Some(app_cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
+        let (_, proj_repo_root) = resolve_project_ids(
+            &state,
+            Some(app_cwd),
+            None,
+            None,
+            ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
 
         assert_ne!(proj_basename, proj_repo_root);
         let cache = state.project_cache.lock().await;
@@ -1881,13 +2047,20 @@ mod tests {
             None,
             None,
             ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
-        let (ws_wt, proj_wt) =
-            resolve_project_ids(&state, Some(wt_cwd), None, None, ProjectStrategy::RepoRoot)
-                .await
-                .unwrap();
+        let (ws_wt, proj_wt) = resolve_project_ids(
+            &state,
+            Some(wt_cwd),
+            None,
+            None,
+            ProjectStrategy::RepoRoot,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(ws_main, ws_wt, "same workspace");
         assert_eq!(
@@ -1895,10 +2068,16 @@ mod tests {
             "worktree must resolve to same project as main repo"
         );
 
-        let (_, proj_wt_basename) =
-            resolve_project_ids(&state, Some(wt_cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (_, proj_wt_basename) = resolve_project_ids(
+            &state,
+            Some(wt_cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
         assert_ne!(
             proj_main, proj_wt_basename,
             "default strategy must not collapse worktrees into the main repo project"
@@ -1917,10 +2096,16 @@ mod tests {
         std::fs::create_dir_all(&plain_dir).unwrap();
         let cwd = plain_dir.to_str().unwrap();
 
-        let (_, proj) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (_, proj) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
 
         // Must NOT be the server-default scratch project.
         assert_ne!(proj, state.project_id);
@@ -1935,6 +2120,7 @@ mod tests {
             None,
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1952,10 +2138,16 @@ mod tests {
         git2::Repository::init_bare(&bare_dir).unwrap();
         let cwd = bare_dir.to_str().unwrap();
 
-        let (_, proj) =
-            resolve_project_ids(&state, Some(cwd), None, None, ProjectStrategy::Basename)
-                .await
-                .unwrap();
+        let (_, proj) = resolve_project_ids(
+            &state,
+            Some(cwd),
+            None,
+            None,
+            ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+        .unwrap();
 
         // Must NOT be the server-default scratch project — basename should work.
         assert_ne!(proj, state.project_id);
@@ -1970,6 +2162,7 @@ mod tests {
             None,
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -1992,6 +2185,7 @@ mod tests {
             None,
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
@@ -2002,6 +2196,7 @@ mod tests {
             None,
             None,
             ProjectStrategy::Basename,
+            &ai_memory_core::ActorKey::default(),
         )
         .await
         .unwrap();
