@@ -668,17 +668,37 @@ impl AiMemoryServer {
     /// `bar/foo`. To target the baked/shared workspace explicitly, pass
     /// `workspace`. Falls back to the baked default only when no `ActiveProject`
     /// has been published yet (early startup / no hooks).
+    /// Legacy single-slot wrapper retained for test fixtures that pre-date
+    /// the actor-aware variant. Production tools must use
+    /// [`Self::write_target_ids_with_actor`] so per-session/per-actor
+    /// isolation modes route the write to the caller's project, not
+    /// whichever single-slot value was published last.
+    #[cfg(test)]
     async fn write_target_ids(
         &self,
         explicit_workspace: Option<&str>,
         explicit_project: Option<&str>,
+    ) -> Result<(WorkspaceId, ProjectId), McpError> {
+        self.write_target_ids_with_actor(
+            explicit_workspace,
+            explicit_project,
+            &ai_memory_core::ActorKey::default(),
+        )
+        .await
+    }
+
+    async fn write_target_ids_with_actor(
+        &self,
+        explicit_workspace: Option<&str>,
+        explicit_project: Option<&str>,
+        actor: &ai_memory_core::ActorKey,
     ) -> Result<(WorkspaceId, ProjectId), McpError> {
         let Some(project) = trimmed_opt(explicit_project) else {
             // No explicit project → current project (hook-published active, or
             // the baked default). Explicit workspace alone has nothing to scope.
             return Ok(self
                 .active_project
-                .get()
+                .get_for(actor)
                 .unwrap_or((self.workspace_id, self.project_id)));
         };
         let workspace_id = match trimmed_opt(explicit_workspace) {
@@ -691,7 +711,7 @@ impl AiMemoryServer {
             // baked global default — keeps writes consistent with reads.
             None => self
                 .active_project
-                .get()
+                .get_for(actor)
                 .map(|(ws, _)| ws)
                 .unwrap_or(self.workspace_id),
         };
@@ -1118,6 +1138,7 @@ impl AiMemoryServer {
         Parameters(args): Parameters<WritePageArgs>,
         Extension(parts): Extension<axum::http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
+        let aps_actor = Self::actor_key_from_parts(Some(&parts));
         let Some(wiki) = self.wiki.as_ref() else {
             return Err(McpError::internal_error(
                 "memory_write_page requires the server to be built with a wiki handle",
@@ -1131,7 +1152,11 @@ impl AiMemoryServer {
         let path = PagePath::new(args.path.clone())
             .map_err(|e| McpError::internal_error(format!("invalid path: {e}"), None))?;
         let (ws, proj) = self
-            .write_target_ids(args.workspace.as_deref(), args.project.as_deref())
+            .write_target_ids_with_actor(
+                args.workspace.as_deref(),
+                args.project.as_deref(),
+                &aps_actor,
+            )
             .await?;
 
         let mut fm = serde_json::Map::new();
