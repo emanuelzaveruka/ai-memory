@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use ai_memory_consolidate::{Consolidator, run_lint, run_sweep};
 use ai_memory_core::{
-    ActiveProject, AgentKind, NewHandoff, PageId, PagePath, ProjectId, SessionId, Tier, WorkspaceId,
+    ActiveProject, AgentKind, HandoffId, HandoffState, NewHandoff, PageId, PagePath, ProjectId,
+    SessionId, Tier, WorkspaceId,
 };
 use ai_memory_llm::{Embedder, LlmProvider};
 use ai_memory_store::{DecayParams, PageHit, ReaderPool, WriterHandle};
@@ -57,7 +58,8 @@ the conversation calls for them:\n\
   'how big is the knowledge base'. Returns lifetime counts.\n\
 - `memory_briefing` — when the user wants a STRUCTURED snapshot \
   (counts + 7d/30d activity + rules + recent pages, JSON, no LLM \
-  call). Use over memory_status when more detail is wanted.\n\
+  call). READ-ONLY: it never creates handoffs or mutates state. Use \
+  over memory_status when more detail is wanted.\n\
 - `memory_explore` — when the user wants a PROSE digest. \
   Calibrates verbosity to time since last activity: 'fresh' → one \
   line, 'stale' (>30d) → full catchup. Accepts an optional `focus` \
@@ -69,10 +71,16 @@ the conversation calls for them:\n\
   '📥 ai-memory: pending handoff' is anywhere in your context, \
   THAT is the handoff — answer from it directly, don't re-call \
   this tool (it'll return null because handoffs are single-use).\n\
-- `memory_handoff_begin` — when the user is wrapping up and you \
-  want to ensure the next agent has context (the SessionEnd hook \
-  also auto-captures this). Keep the summary terse (2-3 sentences); \
-  put detail in open_questions + next_steps bullets.\n\
+- `memory_handoff_begin` — ONLY when the user is wrapping up / ending \
+  the current session and you want to ensure the next agent has context \
+  (the SessionEnd hook also auto-captures this). DO NOT use this to \
+  summarize work mid-session, check project status, or answer a request \
+  for a briefing. Keep the summary terse (2-3 sentences); put detail \
+  in open_questions + next_steps bullets.\n\
+- `memory_handoff_cancel` — when you realize you mistakenly called \
+  `memory_handoff_begin`, or the user explicitly asks to discard a \
+  pending handoff. Requires the exact `handoff_id` from the begin call \
+  and marks it expired so the next session will not consume it.\n\
 - `memory_consolidate` — when the user asks to compile session \
   observations into wiki pages. Also runs on PreCompact, and at \
   session end only when AI_MEMORY_CONSOLIDATE_ON_SESSION_END is set.\n\
@@ -341,6 +349,21 @@ struct HandoffAcceptArgs {
     /// currently working in (resolved from recent hook activity). **Omit unless the user explicitly names a *different* project.**
     #[serde(default)]
     project: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+struct HandoffCancelArgs {
+    /// Exact handoff id returned by `memory_handoff_begin`. Required so this
+    /// tool only discards a handoff the agent can identify.
+    handoff_id: String,
+    /// Project to cancel within. Omit to target the current project. **Omit
+    /// unless the user explicitly names a different project.**
+    #[serde(default)]
+    project: Option<String>,
+    /// Workspace to cancel within, together with `project`. Omit for the
+    /// current/default workspace resolution chain.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1265,7 +1288,10 @@ impl AiMemoryServer {
     /// Create a handoff snapshot for the next agent CLI.
     #[tool(description = "Record a cross-agent handoff snapshot for the \
         NEXT agent that opens this project (e.g. Codex picking up after \
-        Claude Code). The next session's SessionStart hook automatically \
+        Claude Code). Use this ONLY when ending/wrapping up the current \
+        session or when the user explicitly says to save context for the next \
+        session. DO NOT use this to check project status, get a briefing, or \
+        summarize work mid-session. The next session's SessionStart hook automatically \
         consumes the handoff and prepends its content to the agent's \
         context — no manual fetch needed. \
         \
@@ -1348,6 +1374,55 @@ impl AiMemoryServer {
         }
     }
 
+    /// Cancel a mistaken open handoff by exact id.
+    #[tool(description = "Cancel/discard a mistakenly-created OPEN handoff by \
+        exact `handoff_id` returned from `memory_handoff_begin`. Use this ONLY \
+        when you realize you called `memory_handoff_begin` by mistake or the \
+        user explicitly asks to discard a pending handoff. This is a cleanup \
+        tool, not a status/briefing tool. It marks the handoff expired so the \
+        next SessionStart hook will not consume it. Omit project/workspace \
+        unless the user names a different project; when provided, workspace \
+        and project must be supplied together.")]
+    async fn memory_handoff_cancel(
+        &self,
+        Parameters(args): Parameters<HandoffCancelArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let handoff_id = HandoffId::from_str(&args.handoff_id)
+            .map_err(|e| McpError::internal_error(format!("invalid handoff_id: {e}"), None))?;
+        let (ws, proj) = self
+            .effective_ids_for_read_args(args.workspace.as_deref(), args.project.as_deref())
+            .await?;
+        let handoff = self
+            .reader
+            .handoff_by_id(handoff_id)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            .ok_or_else(|| McpError::internal_error("handoff not found", None))?;
+        if handoff.workspace_id != ws || handoff.project_id != proj {
+            return Err(McpError::internal_error(
+                "handoff does not belong to the resolved project",
+                None,
+            ));
+        }
+        if handoff.state != HandoffState::Open {
+            return ok_json(&serde_json::json!({
+                "handoff_id": handoff_id.to_string(),
+                "cancelled": false,
+                "state": handoff.state.as_str(),
+            }));
+        }
+        let cancelled = self
+            .writer
+            .cancel_handoff(handoff_id)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        ok_json(&serde_json::json!({
+            "handoff_id": handoff_id.to_string(),
+            "cancelled": cancelled,
+            "state": if cancelled { "expired" } else { "open" },
+        }))
+    }
+
     /// Report aggregate counts (pages, sessions, observations).
     #[tool(description = "Report aggregate memory counts and runtime status \
         (pages latest, pages all versions, sessions, observations). \
@@ -1375,7 +1450,8 @@ impl AiMemoryServer {
         WITHOUT any LLM call: lifetime counts, 7-day and 30-day activity \
         windows, last-observation timestamp, pending handoff count, \
         current `_rules/` pages, and recent-page list. Cheap, fast, \
-        deterministic. Use this when you want a programmatic view of \
+        deterministic, and READ-ONLY: it never creates handoffs or mutates \
+        project state. Use this when you want a programmatic view of \
         project state; use `memory_explore` if you want an LLM-composed \
         prose summary on top of the same data.")]
     async fn memory_briefing(
@@ -1711,6 +1787,7 @@ mod tests {
             "memory_explore",
             "memory_handoff_accept",
             "memory_handoff_begin",
+            "memory_handoff_cancel",
             "memory_consolidate",
             "memory_write_page",
             "memory_read_page",
@@ -1728,6 +1805,30 @@ mod tests {
             assert!(
                 routing.contains(tool),
                 "routing snippet omit {tool}; update ai_memory_core::SNIPPET_BODY"
+            );
+        }
+    }
+
+    #[test]
+    fn prompts_separate_briefing_from_handoff_lifecycle() {
+        for prompt in [MEMORY_INSTRUCTIONS, ai_memory_core::SNIPPET_BODY] {
+            let lower = prompt.to_ascii_lowercase();
+            assert!(
+                prompt.contains("memory_briefing") && lower.contains("read-only"),
+                "briefing guidance must say it is read-only"
+            );
+            assert!(
+                prompt.contains("memory_handoff_begin")
+                    && (lower.contains("session-end")
+                        || (lower.contains("ending") && lower.contains("session")))
+                    && (lower.contains("do not use") || lower.contains("do **not** use"))
+                    && lower.contains("status")
+                    && lower.contains("briefing"),
+                "handoff-begin guidance must be session-end only and reject status/briefing use"
+            );
+            assert!(
+                prompt.contains("memory_handoff_cancel") && prompt.contains("handoff_id"),
+                "cancel guidance must expose exact-id cleanup for mistaken handoffs"
             );
         }
     }
@@ -3091,6 +3192,102 @@ mod tests {
             .map(|t| t.text.clone())
             .unwrap();
         assert!(again_text.contains("\"handoff\": null"));
+    }
+
+    #[tokio::test]
+    async fn handoff_cancel_expires_open_handoff_and_clears_briefing_count() {
+        let (_tmp, store, server, _ws, _pj) = setup_server().await;
+        let begin = server
+            .memory_handoff_begin(Parameters(HandoffBeginArgs {
+                summary: "accidental status summary".into(),
+                open_questions: vec![],
+                next_steps: vec![],
+                files_touched: vec![],
+                cwd: Some("/tmp/aim".into()),
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let begin_text = begin
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        let begin_json: serde_json::Value = serde_json::from_str(&begin_text).unwrap();
+        let handoff_id = begin_json["handoff_id"].as_str().unwrap().to_string();
+
+        let before = server
+            .memory_briefing(Parameters(BriefingArgs {
+                recent_pages_limit: Some(5),
+                project: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        let before_text = before
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(before_text.contains("\"pending_handoff_count\": 1"));
+
+        let cancel = server
+            .memory_handoff_cancel(Parameters(HandoffCancelArgs {
+                handoff_id: handoff_id.clone(),
+                project: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        let cancel_text = cancel
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(cancel_text.contains("\"cancelled\": true"));
+        assert!(cancel_text.contains("\"state\": \"expired\""));
+
+        let after = server
+            .memory_briefing(Parameters(BriefingArgs {
+                recent_pages_limit: Some(5),
+                project: None,
+                workspace: None,
+            }))
+            .await
+            .unwrap();
+        let after_text = after
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(after_text.contains("\"pending_handoff_count\": 0"));
+
+        let accept = server
+            .memory_handoff_accept(Parameters(HandoffAcceptArgs {
+                cwd: Some("/tmp/aim".into()),
+                project: None,
+            }))
+            .await
+            .unwrap();
+        let accept_text = accept
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(accept_text.contains("\"handoff\": null"));
+
+        let stored = store
+            .reader
+            .handoff_by_id(HandoffId::from_str(&handoff_id).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, HandoffState::Expired);
     }
 
     // ----------------------------------------------------------------

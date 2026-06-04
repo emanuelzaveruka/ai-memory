@@ -799,6 +799,15 @@ pub fn accept_handoff(
     Ok(())
 }
 
+/// Mark an open handoff expired so it will no longer be consumed.
+pub fn cancel_handoff(conn: &mut Connection, handoff_id: &HandoffId) -> StoreResult<bool> {
+    let changed = conn.execute(
+        "UPDATE handoffs SET state = 'expired' WHERE id = ?1 AND state = 'open'",
+        params![handoff_id.as_bytes()],
+    )?;
+    Ok(changed > 0)
+}
+
 fn observation_kind_as_str(kind: ObservationKind) -> &'static str {
     kind.as_str()
 }
@@ -1576,6 +1585,39 @@ mod tests {
         // guard.)
         let second = accept_handoff(&mut conn, &id, AgentKind::Codex, None);
         assert!(second.is_ok(), "double-accept must not error");
+    }
+
+    #[test]
+    fn cancel_handoff_transitions_open_to_expired() {
+        let (_tmp, mut conn, ws, proj) = fresh_db();
+        let new = NewHandoff {
+            workspace_id: ws,
+            project_id: proj,
+            from_session_id: None,
+            from_agent: AgentKind::ClaudeCode,
+            to_agent: None,
+            cwd: None,
+            summary: "accidental handoff".into(),
+            open_questions: vec![],
+            next_steps: vec![],
+            files_touched: vec![],
+        };
+        let id = insert_handoff(&mut conn, &new).unwrap();
+
+        assert!(cancel_handoff(&mut conn, &id).unwrap());
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM handoffs WHERE id = ?1",
+                params![&id.as_bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "expired");
+
+        assert!(
+            !cancel_handoff(&mut conn, &id).unwrap(),
+            "double-cancel should be a no-op"
+        );
     }
 
     /// Supported hook agents persist concrete agent_kind values. V01's CHECK

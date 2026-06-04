@@ -16,8 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subcommand, a thin client of `/admin/delete-page`. Mirrors the
   write-page/read-page CLI shape so terminal users get a complete
   delete-single-page surface for the first time.
+- New `memory_handoff_cancel` MCP tool marks an exact open handoff id expired,
+  giving agents a safe way to discard a mistakenly-created pending handoff
+  before the next session consumes stale context.
 
 ### Fixed
+- MCP tool descriptions and routing snippets now draw a sharper boundary
+  between read-only `memory_briefing` and session-ending
+  `memory_handoff_begin`, reducing accidental dangling handoffs when an agent
+  was only asked for project status.
 - Custom `--web-ui-dir` SPAs mounted at a non-root `--web-slug` now serve the
   injected shell at the trailing-slash root too (for example `/web/`), matching
   `/web` and deep client routes instead of returning a refresh-only 404.

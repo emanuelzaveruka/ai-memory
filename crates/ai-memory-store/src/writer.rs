@@ -75,6 +75,10 @@ pub(crate) enum WriteCmd {
         accepting_session: Option<SessionId>,
         reply: oneshot::Sender<StoreResult<()>>,
     },
+    CancelHandoff {
+        handoff_id: HandoffId,
+        reply: oneshot::Sender<StoreResult<bool>>,
+    },
     /// Retro-fit sessions + observations to per-cwd projects and graveyard
     /// mash-up pages. Executed in one transaction for atomicity.
     Reorg {
@@ -332,6 +336,23 @@ impl WriterHandle {
             handoff_id,
             accepting_agent,
             accepting_session,
+            reply: tx,
+        })
+        .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
+    /// Mark an open handoff expired so it will no longer be consumed.
+    ///
+    /// Returns `true` when an open handoff was changed, `false` when the id was
+    /// already accepted/expired or missing.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::WriterClosed`] or propagates SQL errors.
+    pub async fn cancel_handoff(&self, handoff_id: HandoffId) -> StoreResult<bool> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::CancelHandoff {
+            handoff_id,
             reply: tx,
         })
         .await?;
@@ -815,6 +836,10 @@ fn worker_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriteCmd>) {
                     accepting_session.as_ref(),
                 );
                 send_or_warn(reply, result, "accept_handoff");
+            }
+            WriteCmd::CancelHandoff { handoff_id, reply } => {
+                let result = ops::cancel_handoff(&mut conn, &handoff_id);
+                send_or_warn(reply, result, "cancel_handoff");
             }
             WriteCmd::Reorg { plan, reply } => {
                 let result = ops::reorg_sessions(&mut conn, &plan);

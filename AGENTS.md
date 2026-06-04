@@ -19,11 +19,12 @@ match the intent to the tool. They do not need to name the tool.
 | "have we discussed X?" / "search memory for Y" / before proposing architecture | `memory_query` |
 | "what's been going on" / "show recent activity" (light) | `memory_recent` |
 | "is ai-memory healthy?" / "how big is the wiki?" | `memory_status` |
-| "give me the stats" / structured snapshot for the agent to consume | `memory_briefing` |
+| "give me the stats" / structured snapshot for the agent to consume | `memory_briefing` (read-only; never creates handoffs) |
 | "catch me up" / "I've been away" / "what's important right now?" / open-ended exploration | `memory_explore` |
 | "where did we leave off?" — and you see a `📥 ai-memory: pending handoff` block in your context | already done — answer from that block; do NOT re-call `memory_handoff_accept` |
 | "where did we leave off?" — and no such block is visible | `memory_handoff_accept` (rare; the SessionStart hook usually got there first) |
-| "save context for the next session" / wrapping up | `memory_handoff_begin` (single-use handoff; terse summary; put detail in `open_questions` + `next_steps` bullets) |
+| "save context for the next session" / wrapping up / ending this session | `memory_handoff_begin` (session-end only; do **not** use for status/briefing; single-use handoff; terse summary; put detail in `open_questions` + `next_steps` bullets) |
+| "discard that handoff" / "I created a handoff by mistake" | `memory_handoff_cancel` (requires exact `handoff_id` from `memory_handoff_begin`; marks it expired before the next session sees it) |
 | "consolidate this session" / "compile what we learned" (usually automatic) | `memory_consolidate` |
 | "remember this permanently" / "save a note" / "add an annotation" / durable project knowledge | `memory_write_page` (write a wiki page; do **not** use handoff for permanent notes) |
 | "audit the wiki" / "find contradictions" / "what rules should we add?" | `memory_lint` |

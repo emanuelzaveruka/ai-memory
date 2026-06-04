@@ -148,13 +148,13 @@ struct Handoff {
 }
 ```
 
-MCP tools `memory_handoff_begin` (writes a handoff page tagged `state=open`) and `memory_handoff_accept` (acknowledges, returns the handoff content, marks `accepted_by`). The user can stop Claude Code, start Codex, and Codex's session-start hook fetches the latest open handoff for the cwd.
+MCP tools `memory_handoff_begin` (writes a handoff row tagged `state=open`), `memory_handoff_accept` (acknowledges, returns the handoff content, marks `accepted_by`), and `memory_handoff_cancel` (marks an exact open handoff id expired when it was created by mistake). The user can stop Claude Code, start Codex, and Codex's session-start hook fetches the latest open handoff for the cwd.
 
 agentmemory has this informally (`/handoff` skill); we make it explicit from day one because every research report flagged cross-agent as the v0.1 weak spot.
 
 ## 10. MCP tool surface - narrow on purpose
 
-basic-memory has ~25 tools, agentmemory has 53. Both have user confusion as a result. v1 ships 11 tools:
+basic-memory has ~25 tools, agentmemory has 53. Both have user confusion as a result. The current v1 surface is still deliberately narrow:
 
 | Tool | Purpose | Annotation |
 |---|---|---|
@@ -165,8 +165,11 @@ basic-memory has ~25 tools, agentmemory has 53. Both have user confusion as a re
 | `memory_explore` | LLM-composed prose digest over `memory_briefing`; degrades to JSON without a provider | read-only |
 | `memory_handoff_begin` | Mark session boundary, write handoff | destructive |
 | `memory_handoff_accept` | Fetch + ack the latest open handoff | destructive |
+| `memory_handoff_cancel` | Mark an exact mistakenly-created open handoff expired | destructive |
 | `memory_consolidate` | LLM-driven page rewrite (`multi_page=true` for atomic fan-out) | destructive |
 | `memory_write_page` | Write durable wiki knowledge on explicit user request | destructive |
+| `memory_read_page` | Read a full page body by exact path or top search hit | read-only |
+| `memory_delete_page` | Delete a single exact-path page with admission hooks | destructive |
 | `memory_forget_sweep` | Retention sweep (M8); soft-delete below cold threshold; `dry_run=true` previews | destructive |
 | `memory_lint` | Rule-based + optional LLM contradiction findings → `wiki/_lint/<date>.md` | destructive |
 | `memory_install_self_routing` | Returns the canonical CLAUDE.md / AGENTS.md routing block + per-agent filename hints | read-only |
