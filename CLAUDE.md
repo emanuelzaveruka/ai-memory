@@ -82,7 +82,17 @@ and cognee — every one of them is in `docs/design-decisions.md` §14 with
 issue citations. **Treat any code review that violates one of these as a
 blocking issue:**
 
-1. One config-read path. No `std::env::var` outside `Config::load()`.
+1. One config-read path. Runtime behaviour (anything that touches the
+   Store, Wiki, MCP request path, hook router, or LLM call site) reads
+   from `Config` (loaded once at startup), never from
+   `std::env::var`. Render-time helpers (commands whose output is
+   `settings.json` / hook scripts / install snippets) and fast-path
+   subcommands whose own latency budget forbids `Config::load` (e.g.
+   `ai-memory hook`) MAY read their own scoped env vars directly,
+   but the read MUST carry an inline comment naming the var and the
+   reason, and the code MUST NOT own Store / Wiki state. The point of
+   the rule is one-source-of-truth for runtime values; install-time
+   and fast-path renderers don't threaten that.
 2. Single-writer SQLite actor. All writes through one `mpsc` channel.
 3. Indexes commit in the same transaction as the data. No
    background-task-indexing-after-return.
@@ -98,7 +108,12 @@ blocking issue:**
     Logged loudly on startup.
 12. No global singletons / `lazy_static` configs.
 13. Zero-LLM default path. LLM features opt-in via env.
-14. Tracing subscribers explicitly filter their own module.
+14. Tracing subscribers explicitly filter their own module
+    (implementation-detail level, but called out here because the
+    feedback-loop bug it prevents — agentmemory #519 — was load-bearing
+    enough to leave the project unbootable. New subsystems must repeat
+    the same `with_target_writer` pattern; see `crates/ai-memory-cli/
+    src/main.rs`).
 15. **Every command + storage operation is namespaced by the
     project's stable surrogate `(workspace_id, project_id)` — all
     the way down to the on-disk wiki layout.** Two layers:
@@ -143,22 +158,30 @@ blocking issue:**
     watcher parses the first two path segments of every event as
     UUIDs and uses those to stamp the reindex — events outside the
     namespaced layout are ignored.
-16. **The CLI is always a thin HTTP client to the running MCP /
-    admin server.** The server is the ground truth and the sole
-    writer of wiki + SQLite. CLI commands NEVER call `Store::open`,
-    `Wiki::new`, `build_provider`, or `build_embedder`. State
-    mutations go through `/admin/*` HTTP routes; reads go through
-    MCP tools or `/admin/*` GETs. Exceptions to "always an HTTP client":
-    - `init`, `generate-auth-token`, `install-*`, `setup-agent` —
-      pre-server local setup (no state mutation).
-    - `serve` — IS the server.
-    - `llm-test` — pre-server credential smoke test (hits the external
-      LLM only; no ai-memory state).
-    - `reset`, `restore` — lifecycle ops that fundamentally require the
-      server stopped (a live writer would race with the wipe/extract).
-      Both use `sysinfo` to refuse if any sibling `ai-memory` is alive.
-    Use the shared `crate::http_client::{ServerEndpoint, get_json,
-    post_json}` plumbing for every new client subcommand.
+16. **The server is the sole writer of Store / Wiki state. CLI
+    commands that mutate runtime state go through HTTP.** The rule
+    has two halves, stated as properties rather than an exception list
+    (the list kept growing as new subcommands landed):
+
+    a. **Never open the underlying state from a CLI command.** No CLI
+       subcommand calls `Store::open`, `Wiki::new`, `build_provider`,
+       or `build_embedder`. The shared
+       `crate::http_client::{ServerEndpoint, get_json, post_json}`
+       plumbing is the only way to talk to the server, and every new
+       client subcommand uses it.
+
+    b. **State mutation routes through `/admin/*`.** Any subcommand
+       whose effect would otherwise require writing to SQLite or the
+       wiki MUST POST to an admin route on the running server. Reads go
+       through MCP tools or `/admin/*` GETs.
+
+    Subcommands that don't mutate runtime state (install / render /
+    pre-credential commands, the server itself, fast-path hook events,
+    and lifecycle ops that fundamentally require the server stopped
+    like `reset` / `restore` — both gated by `sysinfo` to refuse if any
+    sibling `ai-memory` is alive) are not bound by half (b), but still
+    must obey half (a): no opening Store / Wiki, no constructing
+    providers / embedders, no direct SQL.
 17. **Wiki-structure changes require a migration.** Any change to the
     on-disk wiki layout (path scheme, directory names, mass page rewrites)
     MUST be accompanied by a `WikiMigration` implementation registered in
@@ -176,6 +199,29 @@ blocking issue:**
     - Append to the registry; never reorder or remove entries.
     See [`docs/wiki-migrations.md`](docs/wiki-migrations.md) for the full
     guide and an example implementation.
+18. **No shell spawn / child process in per-tool-call code paths.**
+    Lifecycle hooks (`/hook`, `ai-memory hook`), MCP tool dispatch, and
+    the hook router MUST NOT spawn shells or child processes
+    (`Command::new`, `bash -c`, `powershell.exe -Command`, …).
+    Everything they need is in the binary — `reqwest` for HTTP,
+    `sysinfo` for process info, `git2` for git. PR #84 measured
+    ~735 ms shell → ~150-205 ms native on Windows (3.5-5× per hook);
+    even on POSIX the spawn shows up as observable stall time across
+    an interactive session. Install-time / render-time helpers (the
+    code that *generates* hook command strings) are exempt — they're
+    the ones picking which native binary the host invokes.
+19. **`CHANGELOG.md` `[Unreleased]` is part of every user-visible PR.**
+    Any PR that adds a flag, env var, endpoint, MCP tool, public API,
+    behaviour change, or observable bug fix MUST add an entry to
+    `[Unreleased]` under the correct Keep-a-Changelog section (Added /
+    Changed / Fixed / Removed / Breaking). `bin/release` migrates
+    `[Unreleased]` verbatim to the new version, so a missing entry
+    means the release tag ships with no release notes attached and the
+    operator has to backfill from `git log`. Treat a missing entry as
+    `[BLOCKING]` at PR review — push back to the author with the
+    suggested one-liner rather than batching the fix into a follow-up
+    `docs(changelog)` commit. The post-merge audit history shows this
+    is otherwise the single most-forgotten contributor obligation.
 
 ## Mistakes documented in the research — do NOT repeat
 
