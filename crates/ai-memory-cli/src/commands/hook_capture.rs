@@ -187,4 +187,93 @@ mod tests {
         .await;
         assert!(r.is_ok());
     }
+
+    /// Happy-path TOML parser: extracts each declared root-level
+    /// `key = "value"` pair. Mirrors the shell `ai_memory_parse_toml_key`.
+    #[test]
+    fn parse_toml_key_extracts_root_level_strings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker = tmp.path().join(".ai-memory.toml");
+        std::fs::write(
+            &marker,
+            r#"
+workspace = "acme"
+project = "infra"
+project_strategy = "repo-root"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_toml_key(&marker, "workspace").as_deref(),
+            Some("acme")
+        );
+        assert_eq!(parse_toml_key(&marker, "project").as_deref(), Some("infra"));
+        assert_eq!(
+            parse_toml_key(&marker, "project_strategy").as_deref(),
+            Some("repo-root")
+        );
+        assert_eq!(parse_toml_key(&marker, "absent"), None);
+    }
+
+    /// Shapes the naive parser deliberately doesn't handle (parity with
+    /// the shell `_lib.sh` helper) — pin the contract so a future
+    /// "robustify" refactor doesn't silently start matching them.
+    #[test]
+    fn parse_toml_key_skips_unsupported_shapes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker = tmp.path().join(".ai-memory.toml");
+        std::fs::write(
+            &marker,
+            r#"
+# Single-quoted values are not honoured.
+workspace = 'acme'
+# Comments after the value are not stripped.
+project = "infra" # this is fine
+"#,
+        )
+        .unwrap();
+        assert_eq!(parse_toml_key(&marker, "workspace"), None);
+        // The trailing comment is appended to the value because the parser
+        // looks for the first `"` — pin it so the contract is explicit.
+        assert_eq!(parse_toml_key(&marker, "project").as_deref(), Some("infra"));
+    }
+
+    /// `find_marker` walks up from `cwd` until it finds `.ai-memory.toml`
+    /// or reaches `$HOME`. Verify the walking — drop the marker two dirs
+    /// above the simulated cwd and confirm it's found.
+    #[test]
+    fn find_marker_walks_up_from_cwd() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker = tmp.path().join(".ai-memory.toml");
+        std::fs::write(&marker, "workspace = \"w\"\n").unwrap();
+        let deep = tmp.path().join("a/b/c");
+        std::fs::create_dir_all(&deep).unwrap();
+        let found = find_marker(deep.to_str().unwrap());
+        assert_eq!(found.as_deref(), Some(marker.as_path()));
+    }
+
+    /// `marker_query_suffix` appends `&workspace=…&project=…` (and
+    /// `&project_strategy=…`) when the marker declares them. Each value is
+    /// URL-encoded, so a workspace with a space round-trips as `%20`.
+    #[test]
+    fn marker_query_suffix_appends_marker_fields() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker = tmp.path().join(".ai-memory.toml");
+        std::fs::write(
+            &marker,
+            r#"
+workspace = "acme corp"
+project = "infra"
+project_strategy = "repo-root"
+"#,
+        )
+        .unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+        let qs = marker_query_suffix(cwd);
+        // cwd is encoded first; marker fields follow in the iteration order
+        // of the loop in `marker_query_suffix`.
+        assert!(qs.contains("&workspace=acme%20corp"), "{qs}");
+        assert!(qs.contains("&project=infra"), "{qs}");
+        assert!(qs.contains("&project_strategy=repo-root"), "{qs}");
+    }
 }

@@ -2,7 +2,7 @@
 //!
 //! Reads the event payload from stdin and issues the same HTTP request
 //! the shell hook scripts do, without spawning a shell or child
-//! processes. See `docs/windows-native-hooks.md`.
+//! processes. See `docs/windows.md#native-hook-command-claude-code-on-windows`.
 
 use std::io::Read;
 

@@ -337,7 +337,8 @@ pub(crate) enum HookCommandPlatform {
     /// Windows, native: invoke the `ai-memory` binary directly
     /// (`<exe> hook --event … --agent …`) with no shell or child
     /// processes — ~3.5× faster per hook than `WindowsBash`. Default for
-    /// Claude Code on Windows; see docs/windows-native-hooks.md.
+    /// Claude Code on Windows; see
+    /// `docs/windows.md#native-hook-command-claude-code-on-windows`.
     WindowsNative,
 }
 
