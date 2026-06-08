@@ -52,6 +52,11 @@ pub enum Command {
     Backup(BackupArgs),
     /// Restore a backup tarball into the data directory.
     Restore(RestoreArgs),
+    /// Rebuild the SQLite index from the wiki/ markdown (the "DB is
+    /// rebuildable from files" guarantee). Recreates workspaces/projects from
+    /// each scope's `_meta.md` manifest and reindexes every page. Run with the
+    /// server stopped, against a freshly-migrated (clean) data dir.
+    Reindex(ReindexArgs),
     /// Print (or apply) lifecycle-hook configuration for an agent CLI.
     InstallHooks(InstallHooksArgs),
     /// Emit a single lifecycle hook natively (reads the event payload
@@ -624,6 +629,10 @@ pub struct RestoreArgs {
     #[arg(long)]
     pub force: bool,
 }
+
+/// Arguments for `reindex`.
+#[derive(Debug, Args)]
+pub struct ReindexArgs {}
 
 /// Agent CLI to install hooks/extensions for. For MCP-only clients
 /// (Claude Desktop), use `install-mcp --client <name>` instead.

@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
         Command::Reset(args) => commands::reset::run(&config, args),
         Command::Backup(args) => commands::backup::run(&config, args).await,
         Command::Restore(args) => commands::restore::run(&config, args),
+        Command::Reindex(args) => commands::reindex::run(&config, args).await,
         Command::InstallHooks(args) => commands::install_hooks::run(&config, args),
         // `Hook` is handled in the fast-path above (before config/tracing).
         Command::Hook(_) => unreachable!("hook handled before config load"),

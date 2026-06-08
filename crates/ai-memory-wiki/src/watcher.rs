@@ -219,7 +219,7 @@ async fn handle_event(wiki: &Wiki, event: notify_debouncer_full::DebouncedEvent)
         let Some((ws, proj, page_path)) = extract_project_ids(wiki.root(), raw_path) else {
             continue;
         };
-        if is_reserved_filename(&page_path) {
+        if is_reserved_page_file(raw_path, &page_path) {
             continue;
         }
         if !raw_path.is_file() {
@@ -284,7 +284,7 @@ async fn reconcile(wiki: &Wiki) -> WikiResult<()> {
 
 /// Walk `<wiki_root>` and return all `(WorkspaceId, ProjectId, proj_root)` tuples
 /// whose first two path segments parse as valid UUIDs.
-fn walk_project_dirs(
+pub(crate) fn walk_project_dirs(
     wiki_root: &Path,
 ) -> WikiResult<Vec<(WorkspaceId, ProjectId, std::path::PathBuf)>> {
     let mut out = Vec::new();
@@ -376,7 +376,7 @@ fn extract_project_dir_ids(
     Some((ws_id, proj_id, wiki_root.join(ws_seg).join(proj_seg)))
 }
 
-fn walk_markdown(root: &Path) -> WikiResult<Vec<PagePath>> {
+pub(crate) fn walk_markdown(root: &Path) -> WikiResult<Vec<PagePath>> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -404,7 +404,7 @@ fn walk_markdown(root: &Path) -> WikiResult<Vec<PagePath>> {
                 && is_markdown(&path)
                 && !is_tempfile(&path)
                 && let Some(pp) = page_path_relative_to(root, &path)
-                && !is_reserved_filename(&pp)
+                && !is_reserved_page_file(&path, &pp)
             {
                 out.push(pp);
             }
@@ -423,19 +423,53 @@ fn is_tempfile(path: &Path) -> bool {
         .is_some_and(|n| n.starts_with(".ai-memory-tmp."))
 }
 
-/// Returns `true` for the per-project reserved files that are NOT wiki
-/// pages: `log-YYYY-MM.md` (per-month rolling event ledger — see
-/// `ai-memory-hooks::log::log_filename_for`), the legacy `log.md`
-/// filename for backwards compatibility, and `bootstrap.md` (manifest).
-/// The watcher must skip them to avoid supersession loops — every
-/// `append_event` write triggers a watcher event, triggering an
-/// `upsert_page`, creating a spurious new supersession version.
-fn is_reserved_filename(page_path: &PagePath) -> bool {
+/// `_meta.md` is the per-scope manifest the engine writes (workspace/project
+/// name + repo_path) so the wiki tree is self-describing. It describes the
+/// scope, it is never a wiki page.
+fn is_manifest_filename(page_path: &PagePath) -> bool {
+    page_path
+        .as_str()
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name == "_meta.md")
+}
+
+/// `log.md` / `log-YYYY-MM.md` are the raw per-project event ledger the hooks
+/// append to (see `ai-memory-hooks::log::log_filename_for`): `## [ts] ...`
+/// entries, never YAML frontmatter.
+fn is_log_ledger_filename(page_path: &PagePath) -> bool {
     let s = page_path.as_str();
     s == "log.md"
-        || s == "bootstrap.md"
         // log-YYYY-MM.md — 7 chars between the dash and the dot.
         || (s.starts_with("log-") && s.ends_with(".md") && s.len() == "log-YYYY-MM.md".len())
+}
+
+/// Cheap peek: does the file open with a `---` YAML frontmatter fence?
+/// Used to tell a real page apart from the raw event ledger.
+fn opens_with_frontmatter(abs: &Path) -> bool {
+    use std::io::{BufRead, BufReader};
+    let Ok(file) = std::fs::File::open(abs) else {
+        return false;
+    };
+    let mut line = String::new();
+    BufReader::new(file).read_line(&mut line).is_ok() && line.trim_end() == "---"
+}
+
+/// Returns `true` for markdown files that are NOT wiki pages and must be
+/// skipped by the indexer:
+/// - `_meta.md` (the self-describing scope manifest) and `bootstrap.md` —
+///   always; and
+/// - the raw event ledger (`log.md` / `log-YYYY-MM.md`) — skipping which
+///   avoids supersession loops, since every `append_event` write triggers a
+///   watcher event. **Unless** a file that merely collides with a ledger name
+///   actually carries YAML frontmatter: then it is a genuine page (e.g. a page
+///   that happens to live at `log.md`) and IS indexed, so it is never silently
+///   dropped on a reindex.
+fn is_reserved_page_file(abs: &Path, page_path: &PagePath) -> bool {
+    if is_manifest_filename(page_path) || page_path.as_str() == "bootstrap.md" {
+        return true;
+    }
+    is_log_ledger_filename(page_path) && !opens_with_frontmatter(abs)
 }
 
 fn page_path_relative_to(root: &Path, abs: &Path) -> Option<PagePath> {
@@ -718,6 +752,80 @@ mod tests {
             .await
             .unwrap();
         assert!(boot_hits.is_empty(), "bootstrap.md must not be indexed");
+
+        handle.shutdown().await;
+        drop(store);
+    }
+
+    /// A page that *collides* with a reserved ledger name (`log.md`) but
+    /// carries YAML frontmatter is a real page and MUST be indexed — not
+    /// silently dropped. Regression for a prod data anomaly (a page lived at
+    /// `log.md`) that a filename-only skip would lose on every reindex. The
+    /// `_meta.md` manifest, by contrast, must NEVER be indexed even though it
+    /// also has frontmatter.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reindex_page_by_content_not_filename() {
+        let (tmp, store, wiki, ws, proj) = setup().await;
+        let proj_dir = tmp
+            .path()
+            .join("wiki")
+            .join(ws.to_string())
+            .join(proj.to_string());
+        std::fs::create_dir_all(&proj_dir).unwrap();
+
+        // A genuine page that happens to live at `log.md` (has frontmatter).
+        std::fs::write(
+            proj_dir.join("log.md"),
+            "---\ntitle: Collides With Ledger\n---\nframmaticpage uniquetoken\n",
+        )
+        .unwrap();
+        // The self-describing manifest — never a page, even with frontmatter.
+        std::fs::write(
+            proj_dir.join("_meta.md"),
+            "---\nworkspace: default\nproject: scratch\n---\nmanifesttoken here\n",
+        )
+        .unwrap();
+        // A raw ledger (no frontmatter) — still skipped.
+        std::fs::write(
+            proj_dir.join("log-2026-06.md"),
+            "## [t] evt | x\nrawledgertoken\n",
+        )
+        .unwrap();
+
+        let handle = WatcherHandle::start(wiki.clone()).unwrap();
+        reconcile(&wiki).await.unwrap();
+
+        let page_hits = store
+            .reader
+            .search_pages("uniquetoken".into(), 5)
+            .await
+            .unwrap();
+        assert_eq!(
+            page_hits.len(),
+            1,
+            "frontmatter page named log.md must be indexed"
+        );
+        assert_eq!(page_hits[0].path.as_str(), "log.md");
+
+        let meta_hits = store
+            .reader
+            .search_pages("manifesttoken".into(), 5)
+            .await
+            .unwrap();
+        assert!(
+            meta_hits.is_empty(),
+            "_meta.md manifest must not be indexed"
+        );
+
+        let ledger_hits = store
+            .reader
+            .search_pages("rawledgertoken".into(), 5)
+            .await
+            .unwrap();
+        assert!(
+            ledger_hits.is_empty(),
+            "raw ledger (no frontmatter) must not be indexed"
+        );
 
         handle.shutdown().await;
         drop(store);

@@ -26,6 +26,7 @@ pub mod move_project;
 pub mod openclaw_plugin;
 pub mod purge_project;
 pub mod read_page;
+pub mod reindex;
 pub mod rename_project;
 pub mod render_shared;
 pub mod reorg;

@@ -142,6 +142,48 @@ pub fn get_or_create_project(
     Ok(id)
 }
 
+/// Insert a workspace with an **explicit id**, idempotent. Unlike
+/// [`get_or_create_workspace`] (which mints a fresh id), this preserves the id
+/// the caller already holds — used by `reindex`, which recovers the id from the
+/// wiki directory name so the rebuilt index keys pages by the same
+/// `(workspace_id, project_id)` the on-disk tree is laid out under. Re-running
+/// is a no-op (`ON CONFLICT(id)`). `created_at` is the rebuild time.
+pub fn ensure_workspace_with_id(
+    conn: &mut Connection,
+    id: ai_memory_core::WorkspaceId,
+    name: &str,
+) -> StoreResult<()> {
+    conn.execute(
+        "INSERT INTO workspaces (id, name, created_at) VALUES (?1, ?2, ?3) \
+         ON CONFLICT(id) DO NOTHING",
+        params![id.as_bytes(), name, Timestamp::now().as_microsecond()],
+    )?;
+    Ok(())
+}
+
+/// Insert a project with an **explicit id** under `workspace_id`, idempotent.
+/// The reindex counterpart of [`ensure_workspace_with_id`].
+pub fn ensure_project_with_id(
+    conn: &mut Connection,
+    id: ai_memory_core::ProjectId,
+    workspace_id: ai_memory_core::WorkspaceId,
+    name: &str,
+    repo_path: Option<&str>,
+) -> StoreResult<()> {
+    conn.execute(
+        "INSERT INTO projects (id, workspace_id, name, repo_path, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(id) DO NOTHING",
+        params![
+            id.as_bytes(),
+            workspace_id.as_bytes(),
+            name,
+            repo_path,
+            Timestamp::now().as_microsecond()
+        ],
+    )?;
+    Ok(())
+}
+
 /// Assert that `project_id` currently belongs to `workspace_id`.
 ///
 /// Wiki writes call this before touching the filesystem so a stale hook/cache

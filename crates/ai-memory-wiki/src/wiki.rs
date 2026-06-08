@@ -10,9 +10,20 @@ use tokio::sync::RwLock;
 
 use crate::admission::{AdmissionChain, AdmissionContext, AdmissionOp};
 use crate::atomic;
-use crate::error::WikiResult;
+use crate::error::{WikiError, WikiResult};
 use crate::git::GitAdapter;
 use crate::markdown::{Markdown, derive_title, emit, extract_links, parse};
+
+/// Summary of a [`Wiki::reindex_all`] run.
+#[derive(Debug, Default, Clone)]
+pub struct ReindexSummary {
+    /// Workspaces recreated from `_meta.md`.
+    pub workspaces: usize,
+    /// Projects recreated from `_meta.md`.
+    pub projects: usize,
+    /// Pages reindexed from the wiki tree.
+    pub pages: usize,
+}
 
 /// Wiki filesystem handle.
 ///
@@ -511,6 +522,92 @@ impl Wiki {
             })
             .await?;
         Ok(id)
+    }
+
+    /// Read a `_meta.md` scope-manifest's frontmatter from `dir`.
+    fn read_scope_meta(dir: &Path) -> WikiResult<serde_json::Value> {
+        let raw = std::fs::read_to_string(dir.join("_meta.md"))?;
+        Ok(parse(&raw)?.frontmatter)
+    }
+
+    /// Rebuild the **entire** store index from the on-disk wiki tree — the
+    /// "DB is rebuildable from files" guarantee made concrete. Walks every
+    /// `<ws-uuid>/<proj-uuid>/` directory, recreates the workspace/project rows
+    /// from each dir's self-describing `_meta.md` manifest (preserving the ids
+    /// the tree is keyed by, via [`WriterHandle::ensure_workspace_with_id`] /
+    /// [`ensure_project_with_id`]), then reindexes every page. Pages are
+    /// detected by content (a frontmatter file named `log.md` is a page; the
+    /// raw `## [..]` ledger, `_meta.md` and `bootstrap.md` are skipped).
+    ///
+    /// Intended for a freshly-migrated (clean) store, e.g. to move a data dir
+    /// onto a different migration lineage without carrying the old
+    /// `refinery_schema_history`. DB-only episodic state (sessions,
+    /// observations, handoffs, decay counters) is NOT reconstructed — it is not
+    /// in the markdown; embeddings can be recomputed separately via `embed`.
+    ///
+    /// # Errors
+    /// Returns [`WikiError`] for filesystem/parse/store errors, including a
+    /// scope directory that lacks its `_meta.md` (the wiki is not
+    /// self-describing — newer engines write the manifest on scope creation).
+    pub async fn reindex_all(&self) -> WikiResult<ReindexSummary> {
+        let root = self.root().to_path_buf();
+        let project_dirs =
+            tokio::task::spawn_blocking(move || crate::watcher::walk_project_dirs(&root))
+                .await
+                .map_err(|e| WikiError::Io(std::io::Error::other(e.to_string())))??;
+
+        let mut summary = ReindexSummary::default();
+        let mut seen_ws = std::collections::HashSet::new();
+
+        for (ws, proj, proj_root) in project_dirs {
+            if seen_ws.insert(ws) {
+                let ws_dir = proj_root
+                    .parent()
+                    .unwrap_or(proj_root.as_path())
+                    .to_path_buf();
+                let meta = Self::read_scope_meta(&ws_dir)?;
+                let name = meta
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        WikiError::Io(std::io::Error::other(format!(
+                            "{}/_meta.md is missing the `workspace` name",
+                            ws_dir.display()
+                        )))
+                    })?;
+                self.writer.ensure_workspace_with_id(ws, name).await?;
+                summary.workspaces += 1;
+            }
+
+            let meta = Self::read_scope_meta(&proj_root)?;
+            let name = meta
+                .get("project")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    WikiError::Io(std::io::Error::other(format!(
+                        "{}/_meta.md is missing the `project` name",
+                        proj_root.display()
+                    )))
+                })?;
+            let repo_path = meta
+                .get("repo_path")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            self.writer
+                .ensure_project_with_id(proj, ws, name, repo_path)
+                .await?;
+            summary.projects += 1;
+
+            let pr = proj_root.clone();
+            let pages = tokio::task::spawn_blocking(move || crate::watcher::walk_markdown(&pr))
+                .await
+                .map_err(|e| WikiError::Io(std::io::Error::other(e.to_string())))??;
+            for path in pages {
+                self.reindex_page(ws, proj, path).await?;
+                summary.pages += 1;
+            }
+        }
+        Ok(summary)
     }
 
     /// Atomically apply a batch of page writes. Either all pages land

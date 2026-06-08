@@ -38,6 +38,18 @@ pub(crate) enum WriteCmd {
         project_id: ProjectId,
         reply: oneshot::Sender<StoreResult<()>>,
     },
+    EnsureWorkspaceWithId {
+        id: WorkspaceId,
+        name: String,
+        reply: oneshot::Sender<StoreResult<()>>,
+    },
+    EnsureProjectWithId {
+        id: ProjectId,
+        workspace_id: WorkspaceId,
+        name: String,
+        repo_path: Option<String>,
+        reply: oneshot::Sender<StoreResult<()>>,
+    },
     UpsertPage {
         page: NewPage,
         reply: oneshot::Sender<StoreResult<PageId>>,
@@ -263,6 +275,51 @@ impl WriterHandle {
         self.send(WriteCmd::EnsureProjectWorkspace {
             workspace_id,
             project_id,
+            reply: tx,
+        })
+        .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
+    /// Insert a workspace with an **explicit id** (idempotent). Used by
+    /// `reindex` to recreate a scope under the id recovered from the wiki
+    /// directory name. See [`ops::ensure_workspace_with_id`].
+    ///
+    /// # Errors
+    /// Returns [`StoreError::WriterClosed`] or propagates SQL errors.
+    pub async fn ensure_workspace_with_id(
+        &self,
+        id: WorkspaceId,
+        name: impl Into<String>,
+    ) -> StoreResult<()> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::EnsureWorkspaceWithId {
+            id,
+            name: name.into(),
+            reply: tx,
+        })
+        .await?;
+        rx.await.map_err(|_| StoreError::WriterClosed)?
+    }
+
+    /// Insert a project with an **explicit id** under `workspace_id`
+    /// (idempotent). See [`ops::ensure_project_with_id`].
+    ///
+    /// # Errors
+    /// Returns [`StoreError::WriterClosed`] or propagates SQL errors.
+    pub async fn ensure_project_with_id(
+        &self,
+        id: ProjectId,
+        workspace_id: WorkspaceId,
+        name: impl Into<String>,
+        repo_path: Option<String>,
+    ) -> StoreResult<()> {
+        let (tx, rx) = oneshot::channel();
+        self.send(WriteCmd::EnsureProjectWithId {
+            id,
+            workspace_id,
+            name: name.into(),
+            repo_path,
             reply: tx,
         })
         .await?;
@@ -785,6 +842,26 @@ fn worker_loop(mut conn: Connection, mut rx: mpsc::Receiver<WriteCmd>) {
             } => {
                 let result = ops::ensure_project_workspace(&conn, &workspace_id, &project_id);
                 send_or_warn(reply, result, "ensure_project_workspace");
+            }
+            WriteCmd::EnsureWorkspaceWithId { id, name, reply } => {
+                let result = ops::ensure_workspace_with_id(&mut conn, id, &name);
+                send_or_warn(reply, result, "ensure_workspace_with_id");
+            }
+            WriteCmd::EnsureProjectWithId {
+                id,
+                workspace_id,
+                name,
+                repo_path,
+                reply,
+            } => {
+                let result = ops::ensure_project_with_id(
+                    &mut conn,
+                    id,
+                    workspace_id,
+                    &name,
+                    repo_path.as_deref(),
+                );
+                send_or_warn(reply, result, "ensure_project_with_id");
             }
             WriteCmd::UpsertPage { page, reply } => {
                 let result = ops::upsert_page(&mut conn, &page);
