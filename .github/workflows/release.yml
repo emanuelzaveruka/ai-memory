@@ -409,6 +409,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: ai-memory-*
           path: artifacts
           merge-multiple: true
 

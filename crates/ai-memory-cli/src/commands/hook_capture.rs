@@ -110,45 +110,75 @@ pub fn build_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// POST the payload as JSON, best-effort. 0.5s budget (parity with the
-/// shell `--max-time 0.5`). Network errors are swallowed — a hook must
-/// never block or fail the agent.
+/// POST the payload as JSON, best-effort. Returns `true` when the server
+/// acknowledged with a 2xx (the engine answers `202 queued`), `false` on any
+/// non-2xx or transport error — never errors, so a hook/flush never fails the
+/// agent. `timeout` is caller-chosen: the per-tool-call hot path no longer
+/// POSTs at all (it spools); only the session-boundary drain calls this, with a
+/// generous budget that tolerates a remote/slow server.
 pub async fn post_hook(
     client: &reqwest::Client,
     url: &str,
     body: &str,
     token: Option<&str>,
-) -> anyhow::Result<()> {
+    timeout: Duration,
+) -> bool {
     let mut req = client
         .post(url)
         .header("Content-Type", "application/json")
-        .timeout(Duration::from_millis(500))
+        .timeout(timeout)
         .body(body.to_owned());
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
-    let _ = req.send().await; // best-effort: ignore the result
-    Ok(())
+    match req.send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
 }
 
-/// GET the handoff text, 1s budget (parity with the shell handoff GET).
-/// Returns None on any error or an empty body.
+/// GET the handoff text with a caller-chosen budget. Returns None on any error
+/// or an empty body. This is the one synchronous read on the agent's critical
+/// path (session-start injects it as context), so the budget is larger than a
+/// loopback default to tolerate a remote server.
 pub async fn get_handoff(
     client: &reqwest::Client,
     url: &str,
     token: Option<&str>,
+    timeout: Duration,
 ) -> Option<String> {
-    let mut req = client.get(url).timeout(Duration::from_millis(1000));
+    let mut req = client.get(url).timeout(timeout);
     if let Some(t) = token {
         req = req.bearer_auth(t);
     }
-    let body = req.send().await.ok()?.text().await.ok()?;
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = resp.text().await.ok()?;
     if body.is_empty() { None } else { Some(body) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn serve_once(status: &'static str, body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
+        format!("http://{addr}/handoff")
+    }
 
     #[test]
     fn extracts_top_level_cwd() {
@@ -175,17 +205,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_hook_returns_ok_even_when_server_unreachable() {
-        // Port 1 is unroutable; best-effort means this still resolves Ok.
+    async fn post_hook_returns_false_when_server_unreachable() {
+        // Port 1 is unroutable; best-effort means this resolves to `false`
+        // (no 2xx) rather than panicking or erroring.
         let client = build_client();
-        let r = post_hook(
+        let ok = post_hook(
             &client,
             "http://127.0.0.1:1/hook?event=pre-tool-use",
             "{}",
             None,
+            Duration::from_millis(500),
         )
         .await;
-        assert!(r.is_ok());
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn get_handoff_ignores_non_success_status() {
+        let url = serve_once("401 Unauthorized", "unauthorized").await;
+        let got = get_handoff(&build_client(), &url, None, Duration::from_secs(1)).await;
+        assert!(got.is_none(), "non-2xx body must not become context");
     }
 
     /// Happy-path TOML parser: extracts each declared root-level

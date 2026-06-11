@@ -69,6 +69,10 @@ pub enum Command {
     InstallMcp(InstallMcpArgs),
     /// Stage + commit the wiki tree under git.
     Commit(CommitArgs),
+    /// List recent wiki git checkpoints for recovery.
+    Checkpoints(CheckpointsArgs),
+    /// Restore a single wiki page from a git checkpoint and reindex it.
+    RestorePage(RestorePageArgs),
     /// Smoke-test an LLM provider by sending one prompt.
     LlmTest(LlmTestArgs),
     /// Run the M8 retention sweep over episodic pages.
@@ -252,6 +256,10 @@ pub enum AuthProviderChoice {
     OpenaiOauth,
     /// GitHub Copilot Chat backend.
     Copilot,
+    /// Generic OIDC device-authorization grant (e.g. Keycloak). Stores a
+    /// per-developer token the lifecycle hooks use to authenticate to the
+    /// ai-memory server, instead of a shared static `--auth-token`.
+    OidcDevice,
 }
 
 /// Arguments for `auth login`.
@@ -266,9 +274,15 @@ pub struct AuthLoginArgs {
     /// GitHub token to persist for Copilot instead of running device auth.
     #[arg(long, hide_env_values = true)]
     pub github_token: Option<String>,
-    /// OAuth client id override for Copilot device auth.
+    /// OAuth/OIDC public client id. Required for `oidc-device`; an optional
+    /// override for `copilot` device auth.
     #[arg(long)]
     pub client_id: Option<String>,
+    /// OIDC issuer URL for `oidc-device` login, e.g. a Keycloak realm
+    /// (`https://keycloak.example.com/realms/serpro`). Endpoints are
+    /// discovered from `<issuer>/.well-known/openid-configuration`.
+    #[arg(long)]
+    pub issuer: Option<String>,
 }
 
 /// Arguments for `auth logout`.
@@ -628,6 +642,37 @@ pub struct RestoreArgs {
     /// Overwrite an existing non-empty data dir.
     #[arg(long)]
     pub force: bool,
+}
+
+/// Arguments for `checkpoints`.
+#[derive(Debug, Args)]
+pub struct CheckpointsArgs {
+    /// Maximum number of checkpoints to list.
+    #[arg(short = 'n', long, default_value_t = 20)]
+    pub limit: usize,
+    /// Emit checkpoints as JSON instead of human-readable rows.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Arguments for `restore-page`.
+#[derive(Debug, Args)]
+pub struct RestorePageArgs {
+    /// Exact wiki path to restore (e.g. `notes/foo.md`).
+    #[arg(long)]
+    pub path: String,
+    /// Git checkpoint/revision to restore from.
+    #[arg(long)]
+    pub from: String,
+    /// Workspace name. Defaults to `default`.
+    #[arg(long, default_value_t = crate::config::DEFAULT_WORKSPACE.to_string())]
+    pub workspace: String,
+    /// Project name. When omitted, auto-derived from the current project.
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Emit the server response as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `reindex`.

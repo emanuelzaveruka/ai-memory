@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.16.0] - 2026-06-11
+### Added
+- Native Claude Code hooks on macOS/Linux now use the direct
+  `ai-memory hook --event ...` command by default, matching native Windows.
+  Native hook commands spool events locally and can authenticate with a stored
+  per-developer OIDC device token instead of a shared static hook token.
+- `ai-memory auth login oidc-device --issuer <url> --client-id <id>` stores a
+  generic OIDC device-flow token for native hook authentication.
+
+### Fixed
+- `ai-memory uninstall --only hooks` now recognizes and removes native
+  `ai-memory hook ...` commands as well as legacy script commands.
+
+## [0.15.0] - 2026-06-11
+### Added
+- Wiki recovery checkpoints now have first-class operator commands:
+  `ai-memory checkpoints` lists recent wiki git commits and
+  `ai-memory restore-page --path <page.md> --from <rev>` restores one page
+  from a checkpoint, writes a new post-restore checkpoint, and reindexes the
+  restored page into SQLite. Startup also creates a one-time upgrade baseline
+  checkpoint for existing wiki trees that had no git commits yet.
+
+### Fixed
+- Release publication now limits the GitHub Release asset download step to
+  `ai-memory-*` artifacts, avoiding Docker Buildx side artifacts that can make
+  tag workflows fail after binaries and Docker images are already published.
+
+## [0.14.0] - 2026-06-11
 ### Added
 - Tagged releases now publish a native Windows x86_64 zip artifact
   (`ai-memory-windows-x86_64.zip`) with `ai-memory.exe`, hooks, default
@@ -900,7 +929,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.16.0
+[0.15.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.15.0
+[0.14.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.14.0
 [0.13.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.13.0
 [0.12.3]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.12.3
 [0.12.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v0.12.2
