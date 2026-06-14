@@ -242,8 +242,8 @@ invariants below.
 | `memory_status` | read-only | Counts, paths, version. |
 | `memory_briefing` | read-only | Structured counts/activity/rules/slots/recent snapshot. |
 | `memory_explore` | read-only | LLM prose digest over the briefing snapshot, degrading to JSON without a provider. |
-| `memory_handoff_begin` | destructive | Open a handoff for the next agent. |
-| `memory_handoff_accept` | destructive | Fetch + ack the latest open handoff (auto-cwd-matched). |
+| `memory_handoff_begin` | destructive | Open a handoff for the next agent. Optional `workspace` + `project` targets a named sibling workspace/project. |
+| `memory_handoff_accept` | destructive | Fetch + ack the latest open handoff (auto-cwd-matched by default). Optional `workspace` + `project` targets a named sibling workspace/project. |
 | `memory_handoff_cancel` | destructive | Mark an exact open handoff id expired when it was created by mistake. |
 | `memory_consolidate` | destructive | LLM-driven page rewrite. `multi_page=true` for atomic fan-out. |
 | `memory_write_page` | destructive | Write durable wiki knowledge when the user explicitly asks to remember/annotate something permanent. |

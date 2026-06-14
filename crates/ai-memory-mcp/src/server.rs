@@ -31,7 +31,7 @@ Long-term memory for the current project.\n\
 \n\
 **Default to the current project — always.** Every tool here \
 auto-scopes to the project resolved from your session's working \
-directory. **Do NOT pass `project` or `cwd` arguments unless the user \
+directory. **Do NOT pass `project`, `workspace`, or `cwd` arguments unless the user \
 explicitly references a *different* project by name** (e.g. 'what did \
 we decide in the other-app project?'). Phrases like 'this project', \
 'here', 'we', 'our work', 'where did we leave off' all mean the \
@@ -70,13 +70,17 @@ the conversation calls for them:\n\
   before you see your first prompt; if a block starting with \
   '📥 ai-memory: pending handoff' is anywhere in your context, \
   THAT is the handoff — answer from it directly, don't re-call \
-  this tool (it'll return null because handoffs are single-use).\n\
+  this tool (it'll return null because handoffs are single-use). Pass \
+  `workspace` + `project` together only when the user names a handoff \
+  in a sibling workspace/project.\n\
 - `memory_handoff_begin` — ONLY when the user is wrapping up / ending \
   the current session and you want to ensure the next agent has context \
   (the SessionEnd hook also auto-captures this). DO NOT use this to \
   summarize work mid-session, check project status, or answer a request \
   for a briefing. Keep the summary terse (2-3 sentences); put detail \
-  in open_questions + next_steps bullets.\n\
+  in open_questions + next_steps bullets. Pass `workspace` + `project` \
+  together only when leaving a handoff for a named sibling \
+  workspace/project.\n\
 - `memory_handoff_cancel` — when you realize you mistakenly called \
   `memory_handoff_begin`, or the user explicitly asks to discard a \
   pending handoff. Requires the exact `handoff_id` from the begin call \
@@ -2154,6 +2158,27 @@ mod tests {
             assert!(
                 prompt.contains("do NOT use") || prompt.contains("do **not** use"),
                 "prompt must explicitly disallow handoffs for permanent notes"
+            );
+        }
+    }
+
+    #[test]
+    fn prompts_teach_cross_workspace_handoff_scope() {
+        for prompt in [MEMORY_INSTRUCTIONS, ai_memory_core::SNIPPET_BODY] {
+            assert!(
+                prompt.contains("memory_handoff_begin") && prompt.contains("memory_handoff_accept"),
+                "prompt must include handoff lifecycle tools"
+            );
+            assert!(
+                prompt.contains("workspace") && prompt.contains("project"),
+                "handoff prompt guidance must mention workspace+project scoping"
+            );
+            assert!(
+                prompt.contains("sibling")
+                    && (prompt.contains("workspace/project")
+                        || prompt.contains("workspace + project")
+                        || prompt.contains("workspace` + `project")),
+                "handoff prompt guidance must restrict explicit workspace scope to named siblings"
             );
         }
     }

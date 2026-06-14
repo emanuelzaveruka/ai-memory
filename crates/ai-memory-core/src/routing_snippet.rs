@@ -34,7 +34,7 @@ for cross-session continuity.
 
 **Default to the current project — always.** Every ai-memory tool
 auto-scopes to the project resolved from your session's working
-directory. **Do NOT pass `project` or `cwd` arguments unless the user
+directory. **Do NOT pass `project`, `workspace`, or `cwd` arguments unless the user
 explicitly references a *different* project by name** (e.g. "what did we
 decide in the `other-app` project?"). Phrases like "this project",
 "here", "we", "our work", "where did we leave off" all mean the *current*
@@ -66,8 +66,8 @@ match the intent to the tool. They do not need to name the tool.
 | "give me the stats" / structured snapshot for the agent to consume | `memory_briefing` (read-only; never creates handoffs) |
 | "catch me up" / "I've been away" / "what's important right now?" / open-ended exploration | `memory_explore` |
 | "where did we leave off?" — and you see a `📥 ai-memory: pending handoff` block in your context | already done — answer from that block; do NOT re-call `memory_handoff_accept` |
-| "where did we leave off?" — and no such block is visible | `memory_handoff_accept` (rare; the SessionStart hook usually got there first) |
-| "save context for the next session" / wrapping up / ending this session | `memory_handoff_begin` (session-end only; do **not** use for status/briefing; single-use handoff; terse summary; put detail in `open_questions` + `next_steps` bullets) |
+| "where did we leave off?" — and no such block is visible | `memory_handoff_accept` (rare; the SessionStart hook usually got there first; pass `workspace` + `project` together only for a named sibling workspace/project) |
+| "save context for the next session" / wrapping up / ending this session | `memory_handoff_begin` (session-end only; do **not** use for status/briefing; single-use handoff; terse summary; put detail in `open_questions` + `next_steps` bullets; pass `workspace` + `project` together only for a named sibling workspace/project) |
 | "discard that handoff" / "I created a handoff by mistake" | `memory_handoff_cancel` (requires exact `handoff_id` from `memory_handoff_begin`; marks it expired before the next session sees it) |
 | "consolidate this session" / "compile what we learned" (also runs on PreCompact; at session end only if `AI_MEMORY_CONSOLIDATE_ON_SESSION_END` is set) | `memory_consolidate` |
 | "remember this permanently" / "save a note" / "add an annotation" / durable project knowledge | `memory_write_page` (write a wiki page; do **not** use handoff for permanent notes; put the title as a `# H1` on the first line of `body` and omit the `title` arg — ai-memory derives it from the H1) |
