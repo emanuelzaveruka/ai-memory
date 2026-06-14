@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed
+- `memory_handoff_begin` and `memory_handoff_accept` now accept an optional
+  `workspace` argument alongside `project`, resolving through the same
+  workspace+project path as `memory_write_page` (begin, create-if-missing) and
+  `memory_handoff_cancel` (accept, find-only). They previously took `project`
+  only, so a cross-workspace handoff was routed by the per-actor active-project
+  fallback and could be written to — or read from — the wrong project.
+  `memory_handoff_cancel` already carried `workspace`.
 
 ## [1.0.3] - 2026-06-13
 ### Added
