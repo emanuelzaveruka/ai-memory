@@ -25,8 +25,9 @@ use crate::commands::install_mcp;
 use crate::commands::openclaw_plugin;
 use crate::commands::render_shared::{
     CURSOR_PROFILE, GEMINI_PROFILE, build_antigravity_payload_with_data_dir,
-    build_claude_code_payload_with_data_dir, build_profile_payload_for_agent,
-    hook_script_for_claude_code, hook_script_for_current_platform, ts_string_literal,
+    build_claude_code_payload_with_data_dir, build_grok_payload_with_data_dir,
+    build_profile_payload_for_agent, hook_script_for_claude_code, hook_script_for_current_platform,
+    ts_string_literal,
 };
 use crate::config::{Config, DEFAULT_SERVER_URL};
 
@@ -69,6 +70,15 @@ pub(crate) fn antigravity_hooks_path() -> anyhow::Result<std::path::PathBuf> {
         .join(".gemini")
         .join("config")
         .join("hooks.json"))
+}
+
+/// `~/.grok/hooks/ai-memory.json` — Grok Build CLI lifecycle hooks.
+pub(crate) fn grok_hooks_path() -> anyhow::Result<std::path::PathBuf> {
+    Ok(dirs::home_dir()
+        .context("could not locate $HOME for ~/.grok/hooks/ai-memory.json")?
+        .join(".grok")
+        .join("hooks")
+        .join("ai-memory.json"))
 }
 
 /// `~/.config/opencode/plugins/ai-memory.ts` — OpenCode's plugin file.
@@ -156,6 +166,10 @@ pub fn run(config: &Config, args: InstallHooksArgs) -> Result<()> {
                     &args,
                 )
             }
+            AgentChoice::Grok => {
+                let hooks_dir = resolve_hooks_dir(args.hooks_dir.as_deref(), args.agent)?;
+                apply_to_grok_settings(&hooks_dir, &server_url, auth, &config.data_dir, &args)
+            }
             AgentChoice::Openclaw => openclaw_plugin::apply(&server_url, auth, &args),
         };
     }
@@ -181,6 +195,10 @@ pub fn run(config: &Config, args: InstallHooksArgs) -> Result<()> {
         AgentChoice::AntigravityCli => {
             let hooks_dir = resolve_hooks_dir(args.hooks_dir.as_deref(), args.agent)?;
             render_agent("antigravity-cli", &hooks_dir, &server_url, auth)
+        }
+        AgentChoice::Grok => {
+            let hooks_dir = resolve_hooks_dir(args.hooks_dir.as_deref(), args.agent)?;
+            render_grok(&hooks_dir, &server_url, auth, &config.data_dir)
         }
         AgentChoice::Openclaw => {
             openclaw_plugin::render(&server_url, auth);
@@ -302,6 +320,9 @@ fn mcp_client_for_agent(agent: AgentChoice) -> Option<McpClient> {
         AgentChoice::Omp => Some(McpClient::Pi),
         AgentChoice::Openclaw => Some(McpClient::Openclaw),
         AgentChoice::AntigravityCli => Some(McpClient::AntigravityCli),
+        // Grok manages its own MCP config under ~/.grok/; we don't
+        // auto-infer a hook server URL from it.
+        AgentChoice::Grok => None,
     }
 }
 
@@ -469,6 +490,59 @@ fn apply_to_claude_code_settings(
                 .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
                 .as_object_mut()
                 .context("`hooks` is present in settings.json but not an object")?;
+            for (event, value) in &our_hooks {
+                overlay_event_hooks(hooks, event, value);
+            }
+            Ok(())
+        })
+    })?;
+    println!(
+        "✓ {} {} ({})",
+        outcome.verb(),
+        path.display(),
+        match outcome {
+            ApplyOutcome::Created => "new file",
+            ApplyOutcome::Updated => "backup written next to it",
+            ApplyOutcome::NoOp => "already up to date",
+        }
+    );
+    Ok(())
+}
+
+/// Mutate `~/.grok/hooks/ai-memory.json` so Grok Build CLI fires the ai-memory
+/// lifecycle hooks. Grok's hook config is structurally identical to Claude
+/// Code's nested hook JSON and uses the same seven CamelCase event names, but
+/// its script bundle carries `agent=grok` and skips destructive SessionStart
+/// handoff fetches. We merge into a dedicated `ai-memory.json` (Grok discovers
+/// every `~/.grok/hooks/*.json`), so a pre-existing third-party hook file is
+/// left untouched.
+fn apply_to_grok_settings(
+    hooks_dir: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    data_dir: &Path,
+    args: &InstallHooksArgs,
+) -> Result<()> {
+    let path = match &args.config_file {
+        Some(p) => p.clone(),
+        None => grok_hooks_path()?,
+    };
+    let staged = stage_hook_scripts(hooks_dir, "grok")?;
+    let command_dir = staged_command_dir(&staged, "grok");
+    let payload =
+        build_grok_payload_with_data_dir(&command_dir, server_url, auth_token, Some(data_dir));
+    let our_hooks = payload
+        .get("hooks")
+        .and_then(|v| v.as_object())
+        .context("internal: build_grok_payload didn't return a hooks object")?
+        .clone();
+    let outcome = apply_atomic(&path, |existing| {
+        mutate_json(existing, |root| {
+            let hooks = root
+                .entry("hooks")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                .as_object_mut()
+                .context("`hooks` is present in ai-memory.json but not an object")?;
             for (event, value) in &our_hooks {
                 overlay_event_hooks(hooks, event, value);
             }
@@ -1643,6 +1717,7 @@ fn resolve_hooks_dir(explicit: Option<&Path>, agent: AgentChoice) -> Result<Path
         AgentChoice::Cursor => "cursor",
         AgentChoice::GeminiCli => "gemini-cli",
         AgentChoice::AntigravityCli => "antigravity-cli",
+        AgentChoice::Grok => "grok",
         AgentChoice::OpenCode | AgentChoice::Omp | AgentChoice::Openclaw => {
             anyhow::bail!("{agent:?} uses a generated integration, not a hook script directory")
         }
@@ -1733,6 +1808,46 @@ fn render_claude_code(
         println!("# Auth: AI_MEMORY_AUTH_TOKEN embedded in each hook command below.");
         println!("#       Treat ~/.claude/settings.json as sensitive (chmod 600).");
     }
+    println!();
+    println!("{serialized}");
+    Ok(())
+}
+
+fn render_grok(
+    hooks_dir: &Path,
+    server_url: &str,
+    auth_token: Option<&str>,
+    data_dir: &Path,
+) -> Result<()> {
+    // Soft check (same rationale as render_claude_code): warn, don't bail,
+    // so the docker host-path flow still works.
+    for (_, script) in super::render_shared::CLAUDE_CODE_EVENTS {
+        let script = hook_script_for_claude_code(script);
+        let abs = hooks_dir.join(script.as_ref());
+        if !abs.exists() {
+            eprintln!(
+                "# warning: {} not present on this filesystem. \
+                 If this command is running inside docker against a \
+                 host path, you can ignore this; otherwise extract \
+                 the scripts first with `ai-memory setup-agent`.",
+                abs.display()
+            );
+        }
+    }
+    let payload =
+        build_grok_payload_with_data_dir(hooks_dir, server_url, auth_token, Some(data_dir));
+    let serialized =
+        serde_json::to_string_pretty(&payload).context("serializing grok hook config")?;
+    println!("# Grok Build CLI hook config — write to ~/.grok/hooks/ai-memory.json");
+    println!("# Hook scripts: {}", hooks_dir.display());
+    println!("# AI-memory server URL: {server_url}");
+    if auth_token.is_some() {
+        println!("# Auth: AI_MEMORY_AUTH_TOKEN embedded in each hook command below.");
+        println!("#       Treat ~/.grok/hooks/ai-memory.json as sensitive (chmod 600).");
+    }
+    println!("# NOTE: Grok ignores hook stdout on SessionStart — capture works,");
+    println!("#       but handoff injection does not. Recover a prior session's");
+    println!("#       handoff via the MCP `memory_handoff_accept` tool.");
     println!();
     println!("{serialized}");
     Ok(())
@@ -1980,6 +2095,16 @@ mod tests {
             effective_hook_server_url(&config, &args, Some(&inferred)),
             "http://homelab:49374"
         );
+    }
+
+    #[test]
+    fn resolve_hooks_dir_uses_grok_bundle_for_grok() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("grok")).unwrap();
+        fs::create_dir_all(tmp.path().join("claude-code")).unwrap();
+
+        let resolved = resolve_hooks_dir(Some(tmp.path()), AgentChoice::Grok).unwrap();
+        assert_eq!(resolved, tmp.path().join("grok"));
     }
 
     #[test]

@@ -117,6 +117,9 @@ fn build_plan(args: &UninstallArgs) -> anyhow::Result<Vec<PlannedChange>> {
             install_hooks::codex_hooks_path()?,
             install_hooks::cursor_hooks_path()?,
             install_hooks::gemini_settings_path()?,
+            // Grok's ~/.grok/hooks/ai-memory.json shares Claude Code's
+            // JSON shape, so the same strip pass removes our entries.
+            install_hooks::grok_hooks_path()?,
         ];
         for path in hook_files {
             if !path.exists() {

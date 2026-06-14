@@ -14,6 +14,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ai_memory_core::AgentKind;
 use ai_memory_llm::OidcToken;
 
 use crate::cli::HookArgs;
@@ -138,20 +139,27 @@ pub async fn run(data_dir: Option<PathBuf>, args: HookArgs) -> anyhow::Result<()
     // abruptly), then fetch + inject the pending handoff for the resuming agent.
     if args.event == "session-start" {
         let _ = hook_spool::drain(&spool, &dd, start_drain_budget(), drain_event_timeout()).await;
-        let client = build_client();
-        let bearer = hook_spool::resolve_bearer(&client, &dd, args.auth_token.as_deref()).await;
-        let handoff_url = format!("{base}/handoff?agent={}{qs}", args.agent);
-        if let Some(handoff) =
-            get_handoff(&client, &handoff_url, bearer.as_deref(), handoff_timeout()).await
-        {
-            let envelope = serde_json::json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "SessionStart",
-                    "additionalContext": handoff,
-                }
-            });
-            println!("{envelope}");
-            return Ok(());
+        // Only fetch the handoff for agents that inject the session-start
+        // hook's stdout as context. Grok ignores it, so fetching here would
+        // consume the handoff server-side (the GET is destructive) and then
+        // discard the result — silently losing it. Those agents recover the
+        // handoff on demand via the MCP `memory_handoff_accept` tool.
+        if AgentKind::from_wire(&args.agent).session_start_injects_handoff() {
+            let client = build_client();
+            let bearer = hook_spool::resolve_bearer(&client, &dd, args.auth_token.as_deref()).await;
+            let handoff_url = format!("{base}/handoff?agent={}{qs}", args.agent);
+            if let Some(handoff) =
+                get_handoff(&client, &handoff_url, bearer.as_deref(), handoff_timeout()).await
+            {
+                let envelope = serde_json::json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": handoff,
+                    }
+                });
+                println!("{envelope}");
+                return Ok(());
+            }
         }
     }
 

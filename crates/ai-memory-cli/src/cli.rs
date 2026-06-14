@@ -714,6 +714,13 @@ pub enum AgentChoice {
     /// `~/.gemini/config/hooks.json`.
     #[value(alias = "antigravity", alias = "agy")]
     AntigravityCli,
+    /// xAI Grok Build CLI — JSON-config hooks in
+    /// `~/.grok/hooks/ai-memory.json`. Native `ai-memory hook --event`
+    /// integration using Grok-specific hook scripts. NOTE: Grok ignores
+    /// hook stdout on `SessionStart`, so
+    /// capture works but handoff injection does not — recover the prior
+    /// session's handoff via the MCP `memory_handoff_accept` tool.
+    Grok,
 }
 
 /// MCP client to render configuration for. Includes both the
@@ -1199,6 +1206,23 @@ mod tests {
             };
             assert!(matches!(hook_args.agent, AgentChoice::AntigravityCli));
         }
+    }
+
+    #[test]
+    fn grok_hook_agent_parses() {
+        let hook_cli = Cli::try_parse_from([
+            "ai-memory",
+            "install-hooks",
+            "--agent",
+            "grok",
+            "--server-url",
+            "http://example.test:49374",
+        ])
+        .unwrap_or_else(|e| panic!("failed to parse install-hooks --agent grok: {e}"));
+        let Command::InstallHooks(hook_args) = hook_cli.command else {
+            panic!("expected install-hooks command for grok");
+        };
+        assert!(matches!(hook_args.agent, AgentChoice::Grok));
     }
 
     #[test]

@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- `install-hooks --agent grok` (plus `setup-agent` / `uninstall` coverage) for
+  the xAI **Grok Build CLI**. Grok's `~/.grok/hooks/ai-memory.json` shares Claude
+  Code's JSON shape and seven-event vocabulary, with a Grok-specific hook bundle
+  and native `ai-memory hook --event … --agent grok` commands.
+  ai-memory entries merge into a dedicated `ai-memory.json`, leaving any
+  third-party `~/.grok/hooks/*.json` untouched. NOTE: Grok ignores hook stdout on
+  `SessionStart`, so capture works but handoff injection does not. Grok's
+  `session-start` therefore skips the handoff fetch entirely — the fetch is
+  destructive (it marks the handoff accepted server-side) and Grok would discard
+  the result, silently losing the handoff; recover a prior session's handoff via
+  the MCP `memory_handoff_accept` tool instead. Adds `AgentKind::Grok` (`grok`
+  wire tag), the `AgentKind::session_start_injects_handoff` gate, and migration
+  `V20` extending the `sessions.agent_kind` CHECK so Grok sessions persist on
+  upgraded servers (the antigravity/`V11` precedent).
 
 ## [1.0.3] - 2026-06-13
 ### Added

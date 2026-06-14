@@ -191,6 +191,8 @@ pub enum AgentKind {
     AntigravityCli,
     /// Oh My Pi (`omp`) / Pi-compatible coding agent.
     Omp,
+    /// xAI Grok Build CLI (`grok`).
+    Grok,
     /// Anything else (manual capture, future agents).
     Other,
 }
@@ -209,6 +211,7 @@ impl AgentKind {
             Self::OpenClaw => "openclaw",
             Self::AntigravityCli => "antigravity-cli",
             Self::Omp => "omp",
+            Self::Grok => "grok",
             Self::Other => "other",
         }
     }
@@ -228,8 +231,27 @@ impl AgentKind {
             "openclaw" | "open-claw" => Self::OpenClaw,
             "antigravity-cli" | "antigravity" | "agy" => Self::AntigravityCli,
             "omp" | "pi" | "oh-my-pi" => Self::Omp,
+            "grok" => Self::Grok,
             _ => Self::Other,
         }
+    }
+
+    /// Whether this agent injects the native `session-start` hook's stdout
+    /// into the resuming session as context. Agents that consume it return
+    /// `true` (Claude Code reads `hookSpecificOutput.additionalContext`).
+    ///
+    /// Grok ignores hook stdout on `SessionStart` (per Grok's hooks docs:
+    /// "For events like SessionStart or PostToolUse, stdout is ignored"), so
+    /// the native hook must NOT fetch the handoff for it: the fetch is
+    /// **destructive** (the server marks the handoff accepted) and the result
+    /// would be discarded — silently losing the handoff. For such agents the
+    /// handoff stays available on demand via the MCP `memory_handoff_accept`
+    /// tool. Unknown future agents return `false` until we know their
+    /// SessionStart stdout semantics; accepting a handoff is single-use and
+    /// should fail safe.
+    #[must_use]
+    pub fn session_start_injects_handoff(self) -> bool {
+        !matches!(self, Self::Grok | Self::Other)
     }
 }
 
@@ -256,6 +278,26 @@ mod tests {
     fn page_path_rejects_dot_segments() {
         assert!(PagePath::new("a/./b").is_err());
         assert!(PagePath::new("a/../b").is_err());
+    }
+
+    #[test]
+    fn agent_kind_grok_round_trips() {
+        assert_eq!(AgentKind::Grok.as_str(), "grok");
+        assert_eq!(AgentKind::from_wire("grok"), AgentKind::Grok);
+        // serde uses rename_all = "kebab-case" → "grok".
+        assert_eq!(serde_json::to_string(&AgentKind::Grok).unwrap(), "\"grok\"");
+        assert_eq!(
+            serde_json::from_str::<AgentKind>("\"grok\"").unwrap(),
+            AgentKind::Grok
+        );
+        // Unknown tags still degrade to Other.
+        assert_eq!(AgentKind::from_wire("grok-2"), AgentKind::Other);
+        // Grok cannot inject the session-start handoff (ignores hook stdout);
+        // every other agent can.
+        assert!(!AgentKind::Grok.session_start_injects_handoff());
+        assert!(AgentKind::ClaudeCode.session_start_injects_handoff());
+        assert!(AgentKind::Codex.session_start_injects_handoff());
+        assert!(!AgentKind::Other.session_start_injects_handoff());
     }
 
     #[test]
