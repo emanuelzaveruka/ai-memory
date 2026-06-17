@@ -343,9 +343,11 @@ env vars in the agent's environment; no `install-hooks` rerun is needed:
 | `AI_MEMORY_HOOK_HANDOFF_TIMEOUT_MINUTES` | 3 seconds | 60 minutes | the synchronous `session-start` handoff GET |
 | `AI_MEMORY_HOOK_START_BUDGET_MINUTES` | 3 seconds | 60 minutes | total time the `session-start` cleanup drain may spend |
 | `AI_MEMORY_HOOK_END_BUDGET_MINUTES` | 10 seconds | 60 minutes | total time the `session-end` flush may spend |
+| `AI_MEMORY_HOOK_INCREMENTAL_THRESHOLD` | 32 events | positive integer | spool backlog size that triggers a 250 ms `post-tool-use` catch-up drain |
 
-Values must be positive whole minutes. Missing, empty, non-numeric, or zero
-values fall back to the built-in defaults; values above 60 are clamped.
+Timing values must be positive whole minutes. Missing, empty, non-numeric, or
+zero values fall back to the built-in defaults; values above 60 are clamped. The
+incremental threshold is a positive event count; invalid values fall back to 32.
 
 ### Native service operations
 
@@ -887,7 +889,7 @@ Two ways to invoke a subcommand against the docker deploy:
 
 ```bash
 # A) Against the running container (stateful: status, search, backup,
-#    checkpoints, restore-page, forget-sweep, lint, embed).
+#    checkpoints, restore-page, audit-contamination, forget-sweep, lint, embed).
 docker exec ai-memory ai-memory status --json
 docker exec ai-memory ai-memory search "karpathy"
 docker exec ai-memory ai-memory backup --to /data/snapshot.tar.gz
@@ -909,6 +911,7 @@ docker run --rm akitaonrails/ai-memory:latest --help     # full subcommand tree
 | `write-page` | `docker exec` | Manual page write (atomic + indexed) |
 | `backup --to` / `restore --from` | `docker exec` | Snapshot or restore the data dir |
 | `checkpoints` / `restore-page` | `docker exec` | List wiki git checkpoints or restore one markdown page and reindex it |
+| `audit-contamination` | `docker exec` | Read-only structural audit for likely cross-project contamination |
 | `forget-sweep` / `lint` / `embed` | `docker exec` | Manual maintenance; sweep + lint also run on the server schedule by default |
 | `commit -m "…"` | `docker exec` | Stage + commit the wiki tree |
 | `reset --confirm` | `docker exec` | Wipe data (refuses while siblings alive) |
