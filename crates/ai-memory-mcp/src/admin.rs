@@ -314,6 +314,7 @@ fn default_auto_improve_pending_path() -> String {
 /// - `POST /admin/auto-improve`
 /// - `POST /admin/curator`
 /// - `GET  /admin/status`
+/// - `GET  /admin/audit-contamination`
 /// - `GET  /admin/search`
 /// - `GET  /admin/read-page`
 /// - `POST /admin/reorg`
@@ -526,11 +527,22 @@ async fn handle_audit_contamination(
     State(state): State<Arc<AdminState>>,
     Query(q): Query<AuditContaminationQuery>,
 ) -> impl IntoResponse {
-    let scope = match (q.workspace.as_deref(), q.project.as_deref()) {
+    let scope = match (
+        trimmed_opt(q.workspace.as_deref()),
+        trimmed_opt(q.project.as_deref()),
+    ) {
         (Some(ws), Some(proj)) => match lookup_ws_proj_no_create(&state, ws, proj).await {
             Ok(ids) => Some(ids),
             Err(e) => return e,
         },
+        (Some(_), None) | (None, Some(_)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "workspace and project must be provided together"
+                })),
+            );
+        }
         _ => None,
     };
     match state.reader.audit_contamination(scope).await {
@@ -4511,6 +4523,32 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn audit_contamination_partial_scope_fails_closed() {
+        let (_tmp, router) = read_page_test_router();
+
+        for uri in [
+            "/admin/audit-contamination?workspace=default",
+            "/admin/audit-contamination?project=ai-memory",
+        ] {
+            let resp = router
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
+            let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(
+                json["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("workspace and project must be provided together")
+            );
+        }
     }
 
     #[tokio::test]

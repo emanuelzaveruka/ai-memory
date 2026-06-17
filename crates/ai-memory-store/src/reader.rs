@@ -3334,9 +3334,8 @@ impl ReaderPool {
     /// - **CHECK A** (`session_wrong_bucket`): a session whose `cwd`
     ///   longest-prefix-resolves to a *different* project than the one it landed
     ///   in — the direct signature of the auto-scope bleed bug. Resolved with the
-    ///   SAME [`Self::find_project_by_cwd_prefix`] the runtime uses, so the audit
-    ///   never claims a session a live resolve would not (exact prefix + cwd
-    ///   safety parity).
+    ///   same prefix and cwd-safety rules as [`Self::find_project_by_cwd_prefix`],
+    ///   so the audit never claims a session a live resolve would not.
     /// - **CHECK B** (`observation_session_drift`): an observation whose
     ///   `project_id` disagrees with its owning session's. On a healthy DB this
     ///   is always empty, so a non-empty result is a regression alarm.
@@ -3360,11 +3359,18 @@ impl ReaderPool {
             None => Vec::new(),
         };
 
-        // Phase 1 (one connection): CHECK B findings + the candidate session
-        // list that Phase 2 resolves with the runtime cwd resolver.
+        // One connection: CHECK B findings + the candidate session list + the
+        // valid repo_path prefixes used to resolve CHECK A. Loading prefixes
+        // once avoids a reader query per historical session while preserving the
+        // same path boundary and safety rules as the runtime resolver.
         type Candidate = (String, WorkspaceId, ProjectId, String, String, String);
+        type Prefix = (WorkspaceId, ProjectId, String, String);
         let sp_b = scope_params.clone();
-        let (mut findings, candidates): (Vec<ContaminationFinding>, Vec<Candidate>) = self
+        let (mut findings, candidates, prefixes): (
+            Vec<ContaminationFinding>,
+            Vec<Candidate>,
+            Vec<Prefix>,
+        ) = self
             .with_conn(move |conn| {
                 let mut findings: Vec<ContaminationFinding> = Vec::new();
 
@@ -3445,16 +3451,78 @@ impl ReaderPool {
                     }
                 }
 
-                Ok((findings, candidates))
+                let mut p_sql = String::from(
+                    "SELECT workspace_id, id, name, repo_path \
+                     FROM projects \
+                     WHERE repo_path IS NOT NULL \
+                       AND length(repo_path) > 1 \
+                       AND repo_path NOT LIKE '%/' \
+                       AND repo_path NOT LIKE '%\\%%' ESCAPE '\\' \
+                       AND repo_path NOT LIKE '%\\_%' ESCAPE '\\'",
+                );
+                if scoped {
+                    p_sql.push_str(" AND workspace_id = ?");
+                }
+                p_sql.push_str(" ORDER BY length(repo_path) DESC");
+                let mut prefixes: Vec<Prefix> = Vec::new();
+                {
+                    let mut stmt = conn.prepare(&p_sql)?;
+                    if scoped {
+                        let rows = stmt.query_map(params_from_iter(scope_params.iter().take(1)), |row| {
+                            Ok((
+                                row.get::<_, Vec<u8>>(0)?,
+                                row.get::<_, Vec<u8>>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                            ))
+                        })?;
+                        for r in rows {
+                            let (ws_b, proj_b, name, repo_path) = r?;
+                            prefixes.push((
+                                WorkspaceId::from_slice(&ws_b)?,
+                                ProjectId::from_slice(&proj_b)?,
+                                name,
+                                repo_path,
+                            ));
+                        }
+                    } else {
+                        let rows = stmt.query_map([], |row| {
+                            Ok((
+                                row.get::<_, Vec<u8>>(0)?,
+                                row.get::<_, Vec<u8>>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                            ))
+                        })?;
+                        for r in rows {
+                            let (ws_b, proj_b, name, repo_path) = r?;
+                            prefixes.push((
+                                WorkspaceId::from_slice(&ws_b)?,
+                                ProjectId::from_slice(&proj_b)?,
+                                name,
+                                repo_path,
+                            ));
+                        }
+                    }
+                }
+
+                Ok((findings, candidates, prefixes))
             })
             .await?;
 
-        // Phase 2 — CHECK A: resolve each session's cwd with the runtime
-        // resolver and flag a bucket mismatch.
+        // CHECK A: resolve each session's cwd against preloaded valid prefixes
+        // and flag a bucket mismatch.
         for (id, ws, landed_proj, landed_ws_name, landed_proj_name, cwd) in candidates {
-            if let Some((resolved_proj, resolved_name)) =
-                self.find_project_by_cwd_prefix(ws, cwd.clone()).await?
-                && resolved_proj != landed_proj
+            let cwd_norm = cwd.trim_end_matches('/').to_string();
+            if !is_safe_cwd_for_prefix_match(&cwd_norm) {
+                continue;
+            }
+            let resolved = prefixes.iter().find(|(prefix_ws, _, _, repo_path)| {
+                *prefix_ws == ws
+                    && (cwd_norm == *repo_path || cwd_norm.starts_with(&format!("{repo_path}/")))
+            });
+            if let Some((_, resolved_proj, resolved_name, _)) = resolved
+                && *resolved_proj != landed_proj
             {
                 findings.push(ContaminationFinding {
                     check: "session_wrong_bucket",
@@ -3463,7 +3531,7 @@ impl ReaderPool {
                     entity_id: id,
                     landed_workspace: landed_ws_name,
                     landed_project: landed_proj_name,
-                    expected_project: Some(resolved_name),
+                    expected_project: Some(resolved_name.clone()),
                     cwd: Some(cwd),
                     session_id: None,
                 });

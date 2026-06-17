@@ -4,7 +4,7 @@
 //! server and renders the report as human text or JSON. Read-only — the server
 //! only reports, never mutates; remediation is a separate operator step.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::AuditContaminationArgs;
@@ -51,12 +51,7 @@ struct Finding {
 /// response can't be parsed.
 pub async fn run(config: &Config, args: AuditContaminationArgs) -> Result<()> {
     let ep = ServerEndpoint::from_config(config);
-    // Both workspace+project scope the audit to one landed bucket; either alone
-    // is ignored (a partial scope is meaningless) — audit everything instead.
-    let query: Vec<(&str, &str)> = match (args.workspace.as_deref(), args.project.as_deref()) {
-        (Some(ws), Some(proj)) => vec![("workspace", ws), ("project", proj)],
-        _ => Vec::new(),
-    };
+    let query = scope_query(&args)?;
     let report: Report = get_json(&ep, "/admin/audit-contamination", &query).await?;
 
     if args.json {
@@ -100,4 +95,40 @@ pub async fn run(config: &Config, args: AuditContaminationArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn scope_query(args: &AuditContaminationArgs) -> Result<Vec<(&str, &str)>> {
+    match (args.workspace.as_deref(), args.project.as_deref()) {
+        (Some(ws), Some(proj)) => Ok(vec![("workspace", ws), ("project", proj)]),
+        (None, None) => Ok(Vec::new()),
+        _ => bail!("--workspace and --project must be provided together"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(workspace: Option<&str>, project: Option<&str>) -> AuditContaminationArgs {
+        AuditContaminationArgs {
+            workspace: workspace.map(str::to_string),
+            project: project.map(str::to_string),
+            json: false,
+        }
+    }
+
+    #[test]
+    fn scope_query_rejects_partial_scope() {
+        assert!(scope_query(&args(Some("default"), None)).is_err());
+        assert!(scope_query(&args(None, Some("ai-memory"))).is_err());
+    }
+
+    #[test]
+    fn scope_query_accepts_global_or_complete_scope() {
+        assert!(scope_query(&args(None, None)).unwrap().is_empty());
+        assert_eq!(
+            scope_query(&args(Some("default"), Some("ai-memory"))).unwrap(),
+            vec![("workspace", "default"), ("project", "ai-memory")]
+        );
+    }
 }
