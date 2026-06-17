@@ -680,7 +680,8 @@ Docker Desktop wrapper, or a source build. Native Claude Code uses direct
 agents use PowerShell `.ps1` defaults.
 
 When run from source, `install-hooks` finds the bundled scripts in
-the repo's `hooks/` automatically:
+the repo's `hooks/` automatically. Extracted release archives also
+auto-discover the sibling `hooks/` bundle beside the `ai-memory` binary:
 
 ```bash
 ./target/release/ai-memory install-hooks --agent claude-code --auth-token "$TOKEN"

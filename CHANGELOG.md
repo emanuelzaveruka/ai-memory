@@ -24,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a legacy `~/projects` or `/work` catch-all), not only `$HOME` and the
   filesystem root, while leaving paths it cannot see locally (a remote or
   multi-user client path, or an unmounted drive) untouched. (issue #103)
+- macOS Docker quick-start now produces a working native-agent setup out of the
+  box (issue #107). Three independent breakages are fixed: (1) the macOS wrapper
+  baked the container-only `host.docker.internal` URL into the *host* agent
+  config, so MCP and every capture hook failed silently — `install-mcp`,
+  `install-hooks`, and `setup-agent` now render the host-reachable
+  `http://127.0.0.1:49374`, decoupled from the `host.docker.internal` URL the
+  wrapper still uses for its own in-container thin-client commands; (2) those
+  thin-client commands were rejected with `403 forbidden host` because the
+  server's loopback-only Host allowlist excluded `host.docker.internal` — the
+  Docker image now ships it in the default `AI_MEMORY_ALLOWED_HOSTS` (native
+  installs stay loopback-only; exposed deployments still override it); and (3)
+  `setup-agent`/`install-hooks` could not locate the hooks bundle that ships
+  beside the binary in the release tarball (the probe derived a bogus
+  `/private/hooks/…`), so the binary-sibling `hooks/` directory is now on the
+  discovery search path and `--source` is no longer required.
 
 ### Added
 - `GET /admin/audit-contamination` (and `ai-memory audit-contamination`) — a
