@@ -258,6 +258,8 @@ ai-memory install-hooks --agent  claude-code --apply
 On Linux/macOS, that's it. Start a Claude Code session as usual - every
 prompt and tool call now lands in ai-memory, and the next session you
 open in this project will see a handoff with where you left off.
+On macOS, the native release binary is also supported and recommended when you
+do not need Docker; see [`docs/macos.md`](docs/macos.md).
 
 The `install-mcp` / `install-hooks` commands use
 `AI_MEMORY_SERVER_URL` / `AI_MEMORY_AUTH_TOKEN` when set; otherwise

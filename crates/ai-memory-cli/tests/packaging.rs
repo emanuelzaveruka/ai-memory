@@ -181,3 +181,23 @@ fn macos_wrapper_routes_urls_by_real_subcommand() {
         "global options before install-hooks must not hide the real subcommand; got {args}"
     );
 }
+
+#[test]
+fn macos_docs_use_valid_install_commands_and_release_body_points_to_them() {
+    let docs = read_repo("docs/macos.md");
+    assert!(docs.contains("install-hooks --agent claude-code --apply"));
+    assert!(docs.contains("install-mcp --client claude-code --apply"));
+    assert!(
+        !docs.contains("setup-agent --agent claude-code --source ./hooks"),
+        "setup-agent has no --apply path; use install-hooks for native macOS docs"
+    );
+    assert!(
+        !docs.contains("init` configures the bearer token"),
+        "init writes token_pepper, not a bearer token"
+    );
+    assert!(docs.contains("Host-side agent config should use"));
+    assert!(docs.contains("Tagged releases publish a multi-arch manifest"));
+
+    let release = read_repo(".github/workflows/release.yml");
+    assert!(release.contains("follow the bundled docs/macos.md"));
+}

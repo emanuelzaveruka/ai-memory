@@ -509,7 +509,7 @@ jobs:
           echo "docker pull akitaonrails/ai-memory:${{ needs.validate-version.outputs.version }}" >> body.md
           echo "" >> body.md
           echo "# macOS aarch64/x86_64 (no toolchain): download the matching ai-memory-macos-<arch>.tar.gz below," >> body.md
-          echo "# extract it, and put ai-memory on PATH." >> body.md
+          echo "# extract it, and follow the bundled docs/macos.md." >> body.md
           echo "" >> body.md
           echo "# Windows x86_64 (no toolchain): download ai-memory-windows-x86_64.zip below," >> body.md
           echo "# extract it, and follow the bundled docs/windows.md." >> body.md

@@ -57,8 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (default 32 events).
 - Added [`docs/macos.md`](docs/macos.md) covering macOS install paths (prebuilt
   release binary, source build, and the Docker wrapper) and the `posix` vs
-  `posix-native` hook platform split, with a "Known limitations" section for the
-  current macOS rough edges. Linked it from the README support matrix, the docs
+  `posix-native` hook platform split, with troubleshooting notes for macOS
+  wrapper and hook-discovery issues. Linked it from the README support matrix, the docs
   table, and `docs/install.md`, and bundled it into the macOS release tarballs
   alongside `docs/install.md` (mirroring how the Windows zip ships
   `docs/windows.md`).
