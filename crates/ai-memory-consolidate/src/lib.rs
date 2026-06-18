@@ -13,6 +13,7 @@ pub mod bootstrap;
 pub mod consolidator;
 pub mod curator;
 pub mod lint;
+pub mod projection;
 pub mod sweep;
 pub mod types;
 

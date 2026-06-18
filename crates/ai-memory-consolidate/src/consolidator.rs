@@ -14,6 +14,7 @@ use ai_memory_wiki::{AdmissionContext, AdmissionOp, Wiki, WritePageRequest};
 use thiserror::Error;
 use tracing::{debug, info};
 
+use crate::projection::{ObservationProjectionConfig, project_observations};
 use crate::types::{ConsolidatedBatch, ConsolidatedPage, ConsolidationOutcome, SlotKind};
 
 /// Errors raised by the consolidator.
@@ -478,26 +479,16 @@ fn build_batch_request_with_slots(
     buf.push_str("Session id: ");
     buf.push_str(&session_id.to_string());
     buf.push_str("\n\nObservations:\n");
-    let (windowed, skipped) = window_observations_to_budget(observations, OBSERVATION_BUDGET_CHARS);
-    if skipped > 0 {
-        buf.push_str(&format!(
-            "(showing {} most recent observations; {} older observations omitted \
-             because they exceeded the context budget — PreCompact / earlier \
-             consolidation runs should have already captured them)\n",
-            windowed.len(),
-            skipped,
-        ));
-    }
-    for o in windowed {
-        buf.push_str(&format!(
-            "- {} | {}\n",
-            observation_label(o),
-            one_line(&o.title)
-        ));
-        if !o.body.trim().is_empty() {
-            buf.push_str(&format!("    body: {}\n", one_line(&o.body)));
-        }
-    }
+    let projected = project_observations(
+        observations,
+        &ObservationProjectionConfig::new(
+            OBSERVATION_BUDGET_CHARS,
+            MAX_PROJECTED_OBSERVATIONS,
+            MAX_PROJECTED_OBSERVATION_BODY_CHARS,
+        )
+        .with_context_label("batch consolidation"),
+    );
+    buf.push_str(&projected.text);
     if !slots.is_empty() {
         buf.push_str("\nCurrent `_slots/` pages (for write-regime decisions):\n");
         for slot in slots {
@@ -596,26 +587,16 @@ fn build_request(
     buf.push_str("Session id: ");
     buf.push_str(&session_id.to_string());
     buf.push_str("\nObservations (in order):\n\n");
-    let (windowed, skipped) = window_observations_to_budget(observations, OBSERVATION_BUDGET_CHARS);
-    if skipped > 0 {
-        buf.push_str(&format!(
-            "(showing {} most recent observations; {} older observations omitted \
-             because they exceeded the context budget — PreCompact / earlier \
-             consolidation runs should have already captured them)\n\n",
-            windowed.len(),
-            skipped,
-        ));
-    }
-    for o in windowed {
-        buf.push_str(&format!(
-            "- {} | {}\n",
-            observation_label(o),
-            one_line(&o.title)
-        ));
-        if !o.body.trim().is_empty() {
-            buf.push_str(&format!("    body: {}\n", one_line(&o.body)));
-        }
-    }
+    let projected = project_observations(
+        observations,
+        &ObservationProjectionConfig::new(
+            OBSERVATION_BUDGET_CHARS,
+            MAX_PROJECTED_OBSERVATIONS,
+            MAX_PROJECTED_OBSERVATION_BODY_CHARS,
+        )
+        .with_context_label("single-page consolidation"),
+    );
+    buf.push_str(&projected.text);
     if !current_body.trim().is_empty() {
         let current_body = prepare_current_body_for_prompt(current_body);
         buf.push_str("\nCurrent (heuristic) page body:\n\n```\n");
@@ -651,63 +632,9 @@ fn build_request(
 /// differently; under-shooting the budget loses some context but never
 /// causes a 400 from the provider.
 const OBSERVATION_BUDGET_CHARS: usize = 400_000;
+const MAX_PROJECTED_OBSERVATIONS: usize = 256;
+const MAX_PROJECTED_OBSERVATION_BODY_CHARS: usize = 3_000;
 const CURRENT_BODY_BUDGET_CHARS: usize = 20_000;
-
-/// Per-observation char-cost estimate used by [`window_observations_to_budget`]
-/// to predict how much each entry will add to the prompt buffer. Matches
-/// the rendered `"- {label} | {one-line title}\n    body: {one-line body}\n"`
-/// shape used by both `build_request` and `build_batch_request_with_slots`.
-fn observation_render_cost(o: &Observation) -> usize {
-    // "- " + label + " | " + title + "\n" plus optional "    body: " + body + "\n"
-    let label = observation_label(o).len();
-    let title = o.title.chars().count();
-    let body = if o.body.trim().is_empty() {
-        0
-    } else {
-        // "    body: " (10) + one-line body + "\n"
-        10 + o.body.chars().count() + 1
-    };
-    2 + label + 3 + title + 1 + body
-}
-
-/// Take observations from most-recent backward, accumulating into the
-/// budget. Returns the included slice (in original chronological order)
-/// and the count of observations skipped. When everything fits, returns
-/// the input unchanged and `skipped = 0`.
-///
-/// This is the long-session fallback for super-long agent runs that
-/// would otherwise exceed the model's context window (the failure mode
-/// sabadell's 7,234-observation 16-hour session hit pre-v0.8.1). The
-/// truncation note prepended by callers tells the LLM that older
-/// observations were omitted, so its output should not pretend to cover
-/// the early session. Earlier observations should already have been
-/// captured by intra-session PreCompact runs; if they weren't, they're
-/// preserved in the raw `observations` table for future
-/// `memory_consolidate` calls.
-fn window_observations_to_budget(
-    observations: &[Observation],
-    budget: usize,
-) -> (&[Observation], usize) {
-    if observations.is_empty() {
-        return (observations, 0);
-    }
-    let mut total = 0usize;
-    // Walk from most recent backward; include each whole entry whose
-    // cost still fits. The first observation that pushes us over the
-    // budget is excluded along with everything older than it.
-    let mut keep_from = observations.len();
-    for (i, o) in observations.iter().enumerate().rev() {
-        let cost = observation_render_cost(o);
-        if total + cost > budget {
-            keep_from = i + 1;
-            break;
-        }
-        total += cost;
-        keep_from = i;
-    }
-    let skipped = keep_from;
-    (&observations[keep_from..], skipped)
-}
 
 fn prepare_current_body_for_prompt(current_body: &str) -> String {
     let without_raw = elide_raw_observations_section(current_body);
@@ -747,15 +674,6 @@ fn clip_current_body_for_prompt(s: &str, max_chars: usize) -> String {
         out.push_str("\n[current heuristic page body truncated]");
     }
     out
-}
-
-fn observation_label(obs: &Observation) -> String {
-    match (&obs.extension, &obs.source_event) {
-        (Some(extension), Some(source_event)) => {
-            format!("{} [{}:{}]", obs.kind.as_str(), extension, source_event)
-        }
-        _ => obs.kind.as_str().to_string(),
-    }
 }
 
 fn build_frontmatter(page: &ConsolidatedPage) -> serde_json::Value {
@@ -853,9 +771,7 @@ mod tests {
     use ai_memory_core::{ObservationId, ObservationKind, ProjectId, SessionId, WorkspaceId};
     use jiff::Timestamp;
 
-    /// Helper for windowing tests — produces an Observation with the
-    /// given body length, all other fields filled with cheap defaults
-    /// so observation_render_cost is dominated by the body size.
+    /// Helper for prompt construction tests.
     fn obs_of_size(body_len: usize) -> Observation {
         Observation {
             id: ObservationId::new(),
@@ -872,80 +788,15 @@ mod tests {
         }
     }
 
-    /// Tiny input that fits in any budget returns unchanged with skipped=0.
     #[test]
-    fn window_observations_returns_all_when_under_budget() {
-        let obs = vec![obs_of_size(10), obs_of_size(20), obs_of_size(30)];
-        let (kept, skipped) = window_observations_to_budget(&obs, 10_000);
-        assert_eq!(kept.len(), 3);
-        assert_eq!(skipped, 0);
-    }
-
-    /// Empty input returns empty + skipped=0 — the early-return guard.
-    #[test]
-    fn window_observations_empty_input_is_empty_output() {
-        let obs: Vec<Observation> = vec![];
-        let (kept, skipped) = window_observations_to_budget(&obs, 10_000);
-        assert_eq!(kept.len(), 0);
-        assert_eq!(skipped, 0);
-    }
-
-    /// Tight budget keeps only the most recent observations. Critical
-    /// behaviour: the LATEST entries are preserved (most useful for the
-    /// LLM); older ones get dropped. Mirrors the sabadell failure mode.
-    #[test]
-    fn window_observations_keeps_most_recent_within_budget() {
-        // 100 observations of ~1k chars each → ~100k chars total.
-        // Budget of 30k chars should keep ~30 most recent.
-        let obs: Vec<Observation> = (0..100).map(|_| obs_of_size(1_000)).collect();
-        let (kept, skipped) = window_observations_to_budget(&obs, 30_000);
-
-        assert!(
-            skipped > 0,
-            "with 100k of input + 30k budget some must drop"
-        );
-        assert_eq!(
-            kept.len() + skipped,
-            100,
-            "kept + skipped must equal total — no double-counting"
-        );
-        // The kept slice must be the suffix of the input — i.e. the
-        // most recent entries, not the oldest.
-        let first_kept_id = kept.first().unwrap().id;
-        let expected_first = obs[skipped].id;
-        assert_eq!(
-            first_kept_id, expected_first,
-            "kept window must start at obs[skipped], not from the beginning"
-        );
-    }
-
-    /// One observation that already exceeds the budget: keep zero,
-    /// skip everything. Caller's prepended "(showing 0 most recent …)"
-    /// message still fires, signalling to the LLM that the session was
-    /// too big to summarise.
-    #[test]
-    fn window_observations_drops_everything_when_single_obs_exceeds_budget() {
-        let obs = vec![obs_of_size(50_000)];
-        let (kept, skipped) = window_observations_to_budget(&obs, 1_000);
-        assert_eq!(kept.len(), 0);
-        assert_eq!(skipped, 1);
-    }
-
-    /// Budget granularity: drops are at observation boundaries, never
-    /// mid-observation. Two equal-cost obs with a budget that fits
-    /// exactly one → keep the most recent one, drop the older one.
-    #[test]
-    fn window_observations_drops_at_observation_boundary() {
-        let a = obs_of_size(100);
-        let b = obs_of_size(100);
-        let cost_each = observation_render_cost(&a);
-        let obs = vec![a, b];
-        // Budget exactly fits one observation.
-        let (kept, skipped) = window_observations_to_budget(&obs, cost_each);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(skipped, 1);
-        // Most-recent (index 1) is the one kept.
-        assert_eq!(kept[0].id, obs[1].id);
+    fn build_request_uses_projected_observation_metadata() {
+        let observations = vec![obs_of_size(10), obs_of_size(20)];
+        let request = build_request(SessionId::new(), &observations, "");
+        let prompt = &request.messages[0].content;
+        assert!(prompt.contains("--- observation 1/2 ---"));
+        assert!(prompt.contains("id:"));
+        assert!(prompt.contains("created_at:"));
+        assert!(prompt.contains("importance:"));
     }
 
     #[test]

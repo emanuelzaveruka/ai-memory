@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Internal consolidation and auto-improvement prompts now use a deterministic,
+  budgeted observation projection that preserves high-signal anchors instead of
+  suffix-only observation windows. Manual handoff fields and item lists are
+  capped after sanitizer scrub with visible truncation markers so oversized
+  handoffs do not overwhelm the next agent context; raw observations remain
+  unchanged.
 - `project_strategy = "repo-root"` no longer falls back to `basename(cwd)` for
   git worktrees whose directory lives outside the main repo tree when the server
   runs in a container. The server resolves repo-root via libgit2 on the incoming

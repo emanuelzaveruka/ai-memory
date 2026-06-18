@@ -7,22 +7,23 @@
 
 use std::collections::BTreeSet;
 
-use ai_memory_core::{Observation, ObservationKind, PagePath, ProjectId, SessionId, WorkspaceId};
+use ai_memory_core::{Observation, PagePath, ProjectId, SessionId, WorkspaceId};
 use ai_memory_llm::{ChatMessage, ChatRequest, LlmError, LlmProvider, Role, complete_structured};
 use ai_memory_store::{BriefingPage, ReaderPool, StoredPageBody};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de};
 use thiserror::Error;
 
+use crate::projection::{ObservationProjectionConfig, project_observations};
+
 const CHARS_PER_TOKEN: usize = 4;
 const PROMPT_RESERVE_TOKENS: usize = 1_000;
 const MAX_PROPOSAL_BODY_CHARS: usize = 32_000;
 const DEFAULT_REVIEW_MAX_TOKENS: u32 = 16_000;
 const MAX_SESSION_PAGE_CHARS: usize = 32_000;
-const MAX_OBSERVATION_BODY_CHARS: usize = 1_500;
 const SAMPLE_LIMIT_WITH_SESSION_PAGE: usize = 48;
 const SAMPLE_LIMIT_WITHOUT_SESSION_PAGE: usize = 72;
-const EVEN_SAMPLE_BUCKETS: usize = 16;
+const MAX_OBSERVATION_BODY_CHARS: usize = 1_500;
 const PROMPT_SCAFFOLD_RESERVE_CHARS: usize = 4_000;
 
 /// Default confidence floor for staged auto-improvement proposals.
@@ -381,12 +382,23 @@ fn build_prompt_input(
         .saturating_sub(recent.len())
         .saturating_sub(session_page_section.len())
         .saturating_sub(PROMPT_SCAFFOLD_RESERVE_CHARS);
-    let (rendered_observations, selected_count) = render_sampled_observations(
+    let selected_limit = if session_page.is_some() {
+        SAMPLE_LIMIT_WITH_SESSION_PAGE
+    } else {
+        SAMPLE_LIMIT_WITHOUT_SESSION_PAGE
+    };
+    let projected_observations = project_observations(
         observations,
-        session_page.is_some(),
-        observation_budget,
-        &mut warnings,
+        &ObservationProjectionConfig::new(
+            observation_budget,
+            selected_limit,
+            MAX_OBSERVATION_BODY_CHARS,
+        )
+        .with_context_label("auto-improve"),
     );
+    warnings.extend(projected_observations.warnings.iter().cloned());
+    let rendered_observations = projected_observations.text;
+    let selected_count = projected_observations.selected_count;
 
     if selected_count < observations.len() {
         rejected_candidates.push(AutoImproveRejectedCandidate {
@@ -449,155 +461,6 @@ fn render_session_page(
     )
 }
 
-fn render_sampled_observations(
-    observations: &[Observation],
-    has_session_page: bool,
-    max_chars: usize,
-    warnings: &mut Vec<String>,
-) -> (String, usize) {
-    if observations.is_empty() {
-        return ("(none)".into(), 0);
-    }
-    if max_chars == 0 {
-        warnings.push("observation sample omitted because session page and page index filled the input budget".into());
-        return ("(omitted by input budget)".into(), 0);
-    }
-
-    let limit = if has_session_page {
-        SAMPLE_LIMIT_WITH_SESSION_PAGE
-    } else {
-        SAMPLE_LIMIT_WITHOUT_SESSION_PAGE
-    };
-    let indices = select_observation_indices(observations, limit);
-    let mut rendered = String::new();
-    let mut kept = 0usize;
-
-    for idx in indices {
-        let Some(obs) = observations.get(idx) else {
-            continue;
-        };
-        let chunk = render_observation(idx, observations.len(), obs);
-        if !rendered.is_empty() && rendered.len().saturating_add(chunk.len()) > max_chars {
-            warnings.push(format!(
-                "observation sample stopped after {kept} selected observations to stay under max_input_tokens"
-            ));
-            break;
-        }
-        rendered.push_str(&chunk);
-        kept += 1;
-    }
-
-    if kept < observations.len() {
-        warnings.push(format!(
-            "observation input sampled {kept} of {} observations for scalable review",
-            observations.len()
-        ));
-    }
-
-    if rendered.is_empty() {
-        rendered.push_str("(none fit the input budget)");
-    }
-    (rendered, kept)
-}
-
-fn select_observation_indices(observations: &[Observation], limit: usize) -> Vec<usize> {
-    if observations.len() <= limit {
-        return (0..observations.len()).collect();
-    }
-    let even = even_sample_indices(observations.len());
-    let mut scored: Vec<(i32, usize)> = observations
-        .iter()
-        .enumerate()
-        .map(|(idx, obs)| {
-            let mut score = observation_score(obs, idx, observations.len());
-            if even.contains(&idx) {
-                score += 40;
-            }
-            (score, idx)
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-
-    let selected: BTreeSet<usize> = scored.into_iter().take(limit).map(|(_, idx)| idx).collect();
-    selected.into_iter().collect()
-}
-
-fn even_sample_indices(total: usize) -> BTreeSet<usize> {
-    let mut out = BTreeSet::new();
-    if total == 0 {
-        return out;
-    }
-    if total == 1 {
-        out.insert(0);
-        return out;
-    }
-    let buckets = EVEN_SAMPLE_BUCKETS.min(total);
-    for bucket in 0..buckets {
-        let idx = bucket.saturating_mul(total - 1) / (buckets - 1).max(1);
-        out.insert(idx);
-    }
-    out
-}
-
-fn observation_score(obs: &Observation, idx: usize, total: usize) -> i32 {
-    let mut score = i32::from(obs.importance);
-    score += match obs.kind {
-        ObservationKind::UserPrompt => 80,
-        ObservationKind::SessionEnd => 70,
-        ObservationKind::Stop => 55,
-        ObservationKind::PreCompact => 45,
-        ObservationKind::PostToolUse => 30,
-        ObservationKind::Notification => 25,
-        ObservationKind::SessionStart => 20,
-        ObservationKind::Other => 15,
-        ObservationKind::PreToolUse => 5,
-    };
-    if idx == 0 || idx + 1 == total {
-        score += 100;
-    }
-
-    let body_prefix = obs.body.chars().take(4_000).collect::<String>();
-    let text = format!("{}\n{}", obs.title, body_prefix).to_ascii_lowercase();
-    for keyword in [
-        "root cause",
-        "fix",
-        "fixed",
-        "failed",
-        "failure",
-        "error",
-        "bug",
-        "regression",
-        "decision",
-        "decided",
-        "gotcha",
-        "rule",
-        "always",
-        "never",
-        "migration",
-        "scope",
-        "workspace",
-        "project",
-        "auth",
-        "test",
-        "clippy",
-        "release",
-    ] {
-        if text.contains(keyword) {
-            score += 15;
-        }
-    }
-    if obs.body.contains("```") {
-        score += 8;
-    }
-    if text.contains("long-term memory (ai-memory)")
-        || text.contains("install ai-memory routing")
-        || text.contains("memory_query searches only one project")
-    {
-        score -= 80;
-    }
-    score
-}
-
 fn render_recent_pages(pages: &[BriefingPage]) -> String {
     if pages.is_empty() {
         return "(none)".into();
@@ -610,25 +473,6 @@ fn render_recent_pages(pages: &[BriefingPage]) -> String {
         ));
     }
     out
-}
-
-fn render_observation(idx: usize, total: usize, obs: &Observation) -> String {
-    let (body, _) = truncate_with_marker(
-        &obs.body,
-        MAX_OBSERVATION_BODY_CHARS,
-        "[observation truncated]",
-    );
-    format!(
-        "\n--- observation {}/{} {} ---\nkind: {}\ntitle: {}\nimportance: {}\ncreated_at: {}\nbody:\n{}\n",
-        idx + 1,
-        total,
-        obs.id,
-        obs.kind.as_str(),
-        obs.title,
-        obs.importance,
-        obs.created_at,
-        body
-    )
 }
 
 fn truncate_with_marker(input: &str, max_bytes: usize, marker: &str) -> (String, bool) {

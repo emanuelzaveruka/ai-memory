@@ -5,7 +5,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use ai_memory_consolidate::{
-    AutoImproveReviewConfig, Consolidator, run_auto_improve_review, run_lint, run_sweep,
+    AutoImproveReviewConfig, Consolidator, projection::cap_text_with_marker,
+    run_auto_improve_review, run_lint, run_sweep,
 };
 use ai_memory_core::{
     ActiveProject, AgentKind, HandoffId, HandoffState, NewHandoff, PageId, PagePath, ProjectId,
@@ -23,6 +24,90 @@ use rmcp::model::{
 };
 use rmcp::{ErrorData as McpError, ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
+
+const HANDOFF_SUMMARY_MAX_CHARS: usize = 3_000;
+const HANDOFF_ITEM_MAX_CHARS: usize = 1_500;
+const HANDOFF_FILE_MAX_CHARS: usize = 512;
+const HANDOFF_TEXT_LIST_MAX_CHARS: usize = 6_000;
+const HANDOFF_FILE_LIST_MAX_CHARS: usize = 4_096;
+const HANDOFF_LIST_MAX_ITEMS: usize = 20;
+
+fn cap_handoff_list<I>(
+    items: I,
+    item_max_chars: usize,
+    total_max_chars: usize,
+    item_label: &str,
+    list_label: &str,
+) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let capped: Vec<String> = items
+        .into_iter()
+        .map(|item| cap_text_with_marker(&item, item_max_chars, item_label))
+        .collect();
+    let total_items = capped.len();
+    let mut out = Vec::new();
+    let mut used_chars = 0usize;
+
+    for (idx, item) in capped.into_iter().enumerate() {
+        if out.len() >= HANDOFF_LIST_MAX_ITEMS {
+            push_handoff_omission_marker(
+                &mut out,
+                &mut used_chars,
+                total_max_chars,
+                list_label,
+                total_items.saturating_sub(idx),
+            );
+            break;
+        }
+        let item_len = item.chars().count();
+        let separator = usize::from(!out.is_empty());
+        if !out.is_empty()
+            && used_chars
+                .saturating_add(separator)
+                .saturating_add(item_len)
+                > total_max_chars
+        {
+            push_handoff_omission_marker(
+                &mut out,
+                &mut used_chars,
+                total_max_chars,
+                list_label,
+                total_items.saturating_sub(idx),
+            );
+            break;
+        }
+        used_chars = used_chars
+            .saturating_add(separator)
+            .saturating_add(item_len);
+        out.push(item);
+    }
+    out
+}
+
+fn push_handoff_omission_marker(
+    out: &mut Vec<String>,
+    used_chars: &mut usize,
+    total_max_chars: usize,
+    label: &str,
+    omitted: usize,
+) {
+    if omitted == 0 {
+        return;
+    }
+    let separator = usize::from(!out.is_empty());
+    let available = total_max_chars.saturating_sub(used_chars.saturating_add(separator));
+    if available == 0 {
+        return;
+    }
+    let marker = format!("[{label} truncated; {omitted} additional item(s) omitted]");
+    let marker: String = marker.chars().take(available).collect();
+    *used_chars = used_chars
+        .saturating_add(separator)
+        .saturating_add(marker.chars().count());
+    out.push(marker);
+}
 
 /// Instructions surfaced to clients via `ServerInfo`. Sent on every
 /// MCP handshake so Claude Code / Codex / OpenCode see this in their
@@ -1695,6 +1780,27 @@ impl AiMemoryServer {
                 &aps_actor,
             )
             .await?;
+        let open_questions = cap_handoff_list(
+            args.open_questions.iter().map(|q| s.scrub(q)),
+            HANDOFF_ITEM_MAX_CHARS,
+            HANDOFF_TEXT_LIST_MAX_CHARS,
+            "handoff item",
+            "handoff open_questions",
+        );
+        let next_steps = cap_handoff_list(
+            args.next_steps.iter().map(|n| s.scrub(n)),
+            HANDOFF_ITEM_MAX_CHARS,
+            HANDOFF_TEXT_LIST_MAX_CHARS,
+            "handoff item",
+            "handoff next_steps",
+        );
+        let files_touched = cap_handoff_list(
+            args.files_touched.iter().map(|f| s.scrub(f)),
+            HANDOFF_FILE_MAX_CHARS,
+            HANDOFF_FILE_LIST_MAX_CHARS,
+            "handoff file",
+            "handoff files_touched",
+        );
         let handoff = NewHandoff {
             workspace_id: ws,
             project_id: proj,
@@ -1702,10 +1808,14 @@ impl AiMemoryServer {
             from_agent: AgentKind::Other,
             to_agent: None,
             cwd: args.cwd.map(std::path::PathBuf::from),
-            summary: s.scrub(&args.summary),
-            open_questions: args.open_questions.iter().map(|q| s.scrub(q)).collect(),
-            next_steps: args.next_steps.iter().map(|n| s.scrub(n)).collect(),
-            files_touched: args.files_touched.iter().map(|f| s.scrub(f)).collect(),
+            summary: cap_text_with_marker(
+                &s.scrub(&args.summary),
+                HANDOFF_SUMMARY_MAX_CHARS,
+                "handoff summary",
+            ),
+            open_questions,
+            next_steps,
+            files_touched,
         };
         let id = self
             .writer
@@ -4107,6 +4217,103 @@ mod tests {
             .map(|t| t.text.clone())
             .unwrap();
         assert!(again_text.contains("\"handoff\": null"));
+    }
+
+    #[tokio::test]
+    async fn handoff_begin_caps_manual_text_after_scrub() {
+        let (_tmp, _store, server, _ws, _pj) = setup_server().await;
+        server
+            .memory_handoff_begin(
+                Parameters(HandoffBeginArgs {
+                    summary: "s".repeat(HANDOFF_SUMMARY_MAX_CHARS + 20),
+                    open_questions: vec!["q".repeat(HANDOFF_ITEM_MAX_CHARS + 20)],
+                    next_steps: vec!["n".repeat(HANDOFF_ITEM_MAX_CHARS + 20)],
+                    files_touched: vec!["f".repeat(HANDOFF_FILE_MAX_CHARS + 20)],
+                    cwd: Some("/tmp/aim".into()),
+                    project: None,
+                    workspace: None,
+                }),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .unwrap();
+
+        let accept = server
+            .memory_handoff_accept(
+                Parameters(HandoffAcceptArgs {
+                    cwd: Some("/tmp/aim".into()),
+                    project: None,
+                    workspace: None,
+                }),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let text = accept
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(text.contains("handoff summary truncated"));
+        assert!(text.contains("handoff item truncated"));
+        assert!(text.contains("handoff file truncated"));
+    }
+
+    #[tokio::test]
+    async fn handoff_begin_caps_manual_lists_in_aggregate() {
+        let (_tmp, _store, server, _ws, _pj) = setup_server().await;
+        let open_questions = (0..100)
+            .map(|idx| format!("question-{idx}: {}", "q".repeat(400)))
+            .collect();
+        server
+            .memory_handoff_begin(
+                Parameters(HandoffBeginArgs {
+                    summary: "contains sk-testsecret12345678901234567890 before cap".into(),
+                    open_questions,
+                    next_steps: vec![],
+                    files_touched: vec![],
+                    cwd: Some("/tmp/aim".into()),
+                    project: None,
+                    workspace: None,
+                }),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .unwrap();
+
+        let accept = server
+            .memory_handoff_accept(
+                Parameters(HandoffAcceptArgs {
+                    cwd: Some("/tmp/aim".into()),
+                    project: None,
+                    workspace: None,
+                }),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .unwrap();
+        let text = accept
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap();
+        assert!(text.contains("handoff open_questions truncated"));
+        assert!(!text.contains("sk-testsecret"));
+    }
+
+    #[test]
+    fn handoff_list_cap_keeps_marker_inside_total_budget() {
+        let items = (0..10).map(|idx| format!("item-{idx}: {}", "x".repeat(80)));
+        let capped = cap_handoff_list(items, 100, 220, "item", "list");
+        let rendered_len = capped
+            .iter()
+            .map(|item| item.chars().count())
+            .sum::<usize>()
+            .saturating_add(capped.len().saturating_sub(1));
+        assert!(rendered_len <= 220);
+        assert!(capped.iter().any(|item| item.contains("list truncated")));
     }
 
     #[tokio::test]
