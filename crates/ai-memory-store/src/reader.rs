@@ -3351,10 +3351,9 @@ impl ReaderPool {
     ///   NOT LIKE '%/'` — rejects stored values that would match too
     ///   broadly (`NULL`, `''`, `/`) or fail the `<repo_path>/%`
     ///   boundary (trailing slash).
-    /// - `repo_path NOT LIKE '%\%%' ESCAPE '\\' AND repo_path NOT
-    ///   LIKE '%\_%' ESCAPE '\\'` — refuses stored values containing
-    ///   LIKE wildcards (`%`, `_`) so a stored `repo_path` can never
-    ///   match unintended siblings.
+    /// - Stored `repo_path` wildcards (`%`, `_`) are escaped in the
+    ///   generated `LIKE` pattern, so they stay literal path bytes
+    ///   instead of matching unintended siblings.
     /// - `?3 IS NULL OR repo_path <> ?3` — never matches a stored
     ///   `repo_path` equal to the operator's home directory (`home`).
     ///   Such a row would be a prefix catch-all for every project
@@ -4502,20 +4501,10 @@ fn briefing_page_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreResu
 /// match. Trailing slash is already trimmed by the caller; this catches:
 /// empty / single-slash / dot-segments (a `/foo/../bar` resolved-by-LIKE
 /// could match a stored `/foo` parent the cwd doesn't logically belong
-/// to, since LIKE doesn't normalise paths) / LIKE wildcards (`%`, `_`)
-/// in the input itself. Treats any failure as "no match" so the caller
-/// falls through to the safe create-by-basename path.
+/// to, since LIKE doesn't normalise paths). Treats any failure as "no
+/// match" so the caller falls through to the safe create-by-basename path.
 fn is_safe_cwd_for_prefix_match(cwd: &str) -> bool {
     if cwd.is_empty() || cwd == "/" {
-        return false;
-    }
-    if cwd.contains('%') || cwd.contains('_') {
-        // LIKE wildcards in the BOUND value are taken literally (?2
-        // is parameter-bound, not interpolated), so this isn't a
-        // safety issue per se — but a `_` in a cwd is so unusual it's
-        // more likely to be a sign of an unexpected payload than a
-        // legit match, and rejecting it costs nothing. `%` is even
-        // less likely in a real path.
         return false;
     }
     for segment in cwd.split('/') {
@@ -4863,5 +4852,47 @@ mod tests {
             Some(app_id),
             "a genuine nested repo under $HOME must still prefix-match"
         );
+    }
+
+    #[tokio::test]
+    async fn prefix_match_treats_percent_and_underscore_as_literal_path_bytes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        let ws = store
+            .writer
+            .get_or_create_workspace("default")
+            .await
+            .unwrap();
+        let literal_id = store
+            .writer
+            .get_or_create_project(
+                ws,
+                "literal",
+                Some(String::from("/tmp/ai_memory_%literal/repo_under")),
+            )
+            .await
+            .unwrap();
+
+        let matched = store
+            .reader
+            .find_project_by_cwd_prefix(
+                ws,
+                String::from("/tmp/ai_memory_%literal/repo_under/src"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(matched.map(|(id, _)| id), Some(literal_id));
+
+        let widened = store
+            .reader
+            .find_project_by_cwd_prefix(
+                ws,
+                String::from("/tmp/aiXmemory_Aliteral/repoXunder/src"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(widened, None, "wildcards in repo_path must stay literal");
     }
 }
