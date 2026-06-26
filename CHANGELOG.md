@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-26
+
 ### Changed
 - `install-instructions` now refreshes a slim markered CLAUDE.md/AGENTS.md
   snippet and installs or updates managed ai-memory Agent Skills by default,
@@ -1390,7 +1392,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidator used server startup default project instead of the
   session's actual project.
 
-[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/akitaonrails/ai-memory/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.4.0
 [1.3.0]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.3.0
 [1.2.2]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.2.2
 [1.2.1]: https://github.com/akitaonrails/ai-memory/releases/tag/v1.2.1
