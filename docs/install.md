@@ -16,6 +16,7 @@ path (docker + Claude Code). This page covers everything else:
   (cargo install, building from source)
 - [LLM provider tiers + self-hosted Ollama](#llm-provider-tiers)
 - [Subcommand reference](#subcommand-reference)
+- [Managed routing snippets and Agent Skills](#managed-routing-snippets-and-agent-skills)
 - [Operating without auth](#operating-without-auth) (local-only)
 - [Keeping ai-memory up to date](#keeping-ai-memory-up-to-date)
 
@@ -71,12 +72,14 @@ The CLI commands (`bootstrap`, `status`, `search`, `lint`, `auto-improve`,
 `setup-agent`: with `AI_MEMORY_SERVER_URL` set, `install-mcp` derives the
 `/mcp` endpoint and `install-hooks` uses the bare server origin.
 
-After upgrading ai-memory, refresh the managed routing block in existing
+After upgrading ai-memory, refresh the managed routing package in existing
 projects so Claude Code/OpenCode/Codex/Gemini pick up new tool guidance and
 proactive retrieval rules. From an agent, ask "refresh the ai-memory routing in
 this project"; from the terminal, run `ai-memory install-instructions` (or pass
-`--target AGENTS.md` for non-Claude prompt files). The update is idempotent and
-only replaces the `<!-- ai-memory:start -->` / `<!-- ai-memory:end -->` block.
+`--target AGENTS.md` for non-Claude prompt files). The update is idempotent:
+legacy long snippets between `<!-- ai-memory:start -->` /
+`<!-- ai-memory:end -->` are replaced in place with the slim snippet, and
+managed Agent Skills are installed or updated alongside it.
 
 ---
 
@@ -943,8 +946,69 @@ docker run --rm akitaonrails/ai-memory:latest --help     # full subcommand tree
 | `install-mcp --client` | `docker run --rm` | MCP-config snippet per client |
 | `install-hooks --agent` | `docker run --rm` | Hook-config snippet for an existing hooks dir |
 | `setup-agent --agent --to --host-prefix` | `docker run --rm -v` | Extract bundled scripts + print config (one-shot) |
-| `uninstall --apply` | same host environment used for install | Remove only ai-memory-owned hooks, MCP entries, and instruction blocks; generated plugin files are deleted only after content validation. Use `--mcp-url` for custom MCP endpoints and `--mcp-name` only to narrow removal. |
+| `install-instructions [--target] [--print] [--no-skills]` | same host environment used for the agent prompt files | Install or update the slim CLAUDE.md / AGENTS.md routing block and, by default, the managed ai-memory Agent Skills |
+| `install-skills --scope --agent` | same host environment used for the agent skill dirs | Install or update only the managed ai-memory Agent Skills |
+| `uninstall --apply` | same host environment used for install | Remove only ai-memory-owned hooks, MCP entries, instruction blocks, managed skill files, and generated plugin files after content/marker validation. Use `--mcp-url` for custom MCP endpoints and `--mcp-name` only to narrow removal. |
 | `llm-test --provider …` | `docker run --rm -e …` | Smoke-test an LLM provider |
+
+### Managed routing snippets and Agent Skills
+
+ai-memory's routing install is agent-facing prompt packaging. It does not add a
+runtime skill router, and `SKILL.md` files are not durable memory pages. The
+wiki remains the durable source of truth.
+
+`ai-memory install-instructions` now writes two managed prompt artifacts by
+default:
+
+1. A slim instruction block in `CLAUDE.md`, `AGENTS.md`, or the file passed with
+   `--target`. The block is bounded by `<!-- ai-memory:start -->` and
+   `<!-- ai-memory:end -->`.
+2. Managed ai-memory Agent Skills containing the detailed tool-routing guidance.
+
+Re-running the command is safe. If a project still has the old long ai-memory
+block between those markers, the refresh replaces that block in place with the
+slim snippet and leaves unrelated instructions before and after it alone.
+Managed skill files contain an ai-memory ownership marker; same-name user skills
+without that marker are preserved unless you explicitly force replacement.
+
+`install-instructions` flags for skills:
+
+| Flag | Meaning |
+|---|---|
+| `--no-skills` | Refresh only the markered instruction block. |
+| `--skills-scope <scope>` | Choose project-local or user-global skill roots. Values: `project`, `global`. Defaults to `project`. |
+| `--skills-agent <agent>` | Choose `.claude/skills`, `.agents/skills`, or both. Values: `claude-code`, `agents`, `both`. By default, `CLAUDE.md` targets imply `claude-code`, `AGENTS.md` targets imply `agents`, and both instruction files imply `both`. |
+| `--skills-target-dir <dir>` | Write managed skill directories below an explicit root instead of inferring from scope and agent. |
+| `--skills-force` | Replace unmanaged same-name skills during `install-instructions`; without it, they are left untouched and the command exits with an actionable error. |
+
+Use `install-skills` when the instruction block is already right and only the
+Agent Skill files need a refresh:
+
+```bash
+ai-memory install-skills
+ai-memory install-skills --scope global --agent agents
+ai-memory install-skills --agent both --print
+ai-memory install-skills --target-dir .custom/skills --force
+```
+
+`install-skills` flags:
+
+| Flag | Meaning |
+|---|---|
+| `--scope <scope>` | Install into this project or the current user's global skill roots. Values: `project`, `global`. Defaults to `project`. |
+| `--agent <agent>` | Install into Claude Code's skill root, the cross-agent skill root, or both. Values: `claude-code`, `agents`, `both`. Defaults to `claude-code`. |
+| `--target-dir <dir>` | Write managed skill directories below an explicit root; `--scope` and `--agent` are ignored. |
+| `--print` | Print target paths and `SKILL.md` contents without writing files. |
+| `--force` | Replace unmanaged same-name skills; without it, user-authored same-name skills are preserved. |
+
+Default skill target roots:
+
+| Scope | `--agent claude-code` | `--agent agents` |
+|---|---|---|
+| `project` | `.claude/skills` | `.agents/skills` |
+| `global` | `~/.claude/skills` | `~/.agents/skills` |
+
+Each managed skill is written as `<root>/<skill-name>/SKILL.md`.
 
 Data dir inside the container is `/data` (mounted via the compose
 volume). Outside docker, override with `AI_MEMORY_DATA_DIR=/path`.
@@ -1130,8 +1194,8 @@ write to `~/.local/share/ai-memory/hooks/`.
 
 - [`docs/deploy.md`](deploy.md) - homelab deploy walkthrough
   (`bin/deploy`, cloudflared TLS, env-file management)
-- [`docs/usage.md`](usage.md) - handoffs, proactive querying, web UI,
-  routing snippet, migration from other memory tools, and raw-wiki inspection
+- [`docs/usage.md`](usage.md) - handoffs, proactive querying, web UI, slim
+  routing snippet + managed Agent Skills, migration from other memory tools, and raw-wiki inspection
 - [`docs/mcp-install.md`](mcp-install.md) - per-client MCP config
   reference for Cursor, Claude Desktop, Gemini CLI, Antigravity CLI, OpenClaw, OMP, VS Code Copilot
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) - what's actually

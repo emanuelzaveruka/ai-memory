@@ -31,7 +31,10 @@ The safe product shape is:
 Do not copy Hermes' agent-local skill system directly. ai-memory's durable unit
 is the project wiki page, not a `SKILL.md` package. The analogous targets are
 `gotchas/`, `decisions/`, `concepts/`, `procedures/`, `_rules/`, small
-`_slots/` state pages, and pending review pages under `_pending/`.
+`_slots/` state pages, and pending review pages under `_pending/`. The managed
+ai-memory Agent Skills installed with routing are a narrow prompt-packaging
+exception: static files that teach agents when to call MCP tools, not durable
+memory pages or auto-improvement outputs.
 
 ## Hermes Findings
 
@@ -73,7 +76,7 @@ The default is off, preserving existing behavior. When enabled:
 | Foreground memory, interactive CLI | Prompt inline when possible. |
 | Foreground memory, no prompt channel | Stage to pending storage. |
 | Background memory | Stage to pending storage. |
-| Skill writes | Always stage, because skill files can be large. |
+| Hermes skill writes | Always stage, because skill files can be large. |
 | User denies inline memory write | Block, do not stage. |
 | Prompt machinery fails | Stage rather than silently dropping the write. |
 
@@ -277,8 +280,9 @@ Default-available auto-improvement must not surprise existing installs:
     preserve all existing wiki files and session/observation rows.
 5. Existing installed `CLAUDE.md`/`AGENTS.md` blocks remain valid. Operators pick
    up newer proactive retrieval guidance by running `ai-memory install-instructions`
-   or asking an agent to refresh the ai-memory routing block. The marker-based
-   replacement must remain idempotent.
+   or asking an agent to refresh the ai-memory routing package. The marker-based
+   replacement must remain idempotent, and the managed Agent Skill files should
+   refresh from the same binary-owned assets as the slim snippet.
 6. Target-page mutations must pass through proposal staging first and must keep
    approval attribution separate from the autonomous
    `auto_improve` proposal actor.
@@ -388,11 +392,12 @@ proposal state, approval status, evidence metadata, and audit rows, but the
 review artifact itself should be inspectable and versioned like the rest of the
 wiki.
 
-Because this is now an MCP tool surface, the standard prompt snippets and
-regression tests assert `memory_auto_improve` appears in both prompt surfaces.
-Existing installed `CLAUDE.md`/`AGENTS.md` snippets update idempotently when the
-operator runs `ai-memory install-instructions` or asks an agent to refresh the
-ai-memory routing block.
+Because this is now an MCP tool surface, the standard prompt snippets, managed
+Agent Skills, and regression tests assert `memory_auto_improve` appears in the
+combined prompt-routing surface. Existing installed `CLAUDE.md`/`AGENTS.md`
+snippets update idempotently when the operator runs
+`ai-memory install-instructions` or asks an agent to refresh the ai-memory
+routing package.
 
 ### Upgrade note for existing installs
 

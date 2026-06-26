@@ -2,7 +2,7 @@
 
 This page covers what happens after ai-memory is installed: handoffs,
 compaction recovery, proactive memory queries, the web UI, and the
-project-rule routing snippet.
+managed routing snippet + Agent Skills package.
 
 ## Cross-agent handoff
 
@@ -42,8 +42,8 @@ though its raw chat history was compacted away.
 
 Hooks handle capture without prompting. Proactive querying depends on
 the agent knowing which MCP tool to call for each situation. Install the
-routing snippet into the project rules file once, then agents can use
-the wiki without you naming tools explicitly.
+managed routing package once: a slim always-loaded snippet points agents
+at the managed ai-memory Agent Skills that carry detailed tool routing.
 
 | You say | Agent calls | Effect |
 |---|---|---|
@@ -66,7 +66,7 @@ full page before acting: rules are constraints, gotchas are preflight warnings,
 procedures are checklists, and decisions are settled architecture unless the
 user explicitly asks to revisit them.
 
-## Install the routing snippet
+## Install the routing snippet and Agent Skills
 
 From an agent, say:
 
@@ -74,12 +74,14 @@ From an agent, say:
 Install ai-memory routing into this project.
 ```
 
-The agent calls `memory_install_self_routing`, receives the canonical
-snippet, and writes it to the right rules file (`CLAUDE.md` for Claude
-Code, `AGENTS.md` for Codex / OpenCode / Cursor / Gemini CLI /
-Antigravity CLI). The
-block is wrapped in `<!-- ai-memory:start -->` and
-`<!-- ai-memory:end -->`, so re-runs replace it in place.
+The agent calls `memory_install_self_routing` and receives the slim
+`markered_block`, marker strings, rules-file hints, managed skill payloads,
+skill target hints, and overwrite guidance. It then uses its normal file-edit
+tool to preserve unrelated user content, replace or append the
+`<!-- ai-memory:start -->` / `<!-- ai-memory:end -->` block, and write each
+managed skill below the selected skill root. Skill files are ai-memory-managed
+only when they contain the managed marker, so unmanaged same-name skills should
+not be overwritten unless the human explicitly forces replacement.
 
 From a terminal:
 
@@ -87,11 +89,42 @@ From a terminal:
 ai-memory install-instructions
 ai-memory install-instructions --target AGENTS.md
 ai-memory install-instructions --print
+ai-memory install-instructions --no-skills
 ```
 
+`install-instructions` installs or updates managed skills by default. Use
+`--no-skills` only when you intentionally want a snippet-only refresh. Skill
+flags mirror `install-skills` with an `--skills-` prefix:
+`--skills-scope project|global`, `--skills-agent claude-code|agents|both`,
+`--skills-target-dir <dir>`, and `--skills-force`.
+
 Auto-detect extends `CLAUDE.md` when it exists, `AGENTS.md` when it
-exists, both when both exist, or creates `CLAUDE.md` when neither
-exists. Use `--target AGENTS.md` for non-Claude-only projects.
+exists, both when both exist, or creates `CLAUDE.md` when neither exists. Use
+`--target AGENTS.md` for non-Claude-only projects. The skill target follows the
+instruction target unless you override it: `CLAUDE.md` implies
+`.claude/skills`, `AGENTS.md` implies `.agents/skills`, and both files imply
+both skill roots.
+
+To refresh only the managed Agent Skills:
+
+```bash
+ai-memory install-skills
+ai-memory install-skills --scope global --agent agents
+ai-memory install-skills --agent both --print
+ai-memory install-skills --target-dir .custom/skills --force
+```
+
+Project-local skill roots are `.claude/skills` for Claude-compatible installs
+and `.agents/skills` for cross-client installs. Global roots are
+`~/.claude/skills` and `~/.agents/skills`. `--target-dir` points at an explicit
+skill root and bypasses scope/agent inference. `--print` previews target paths
+and `SKILL.md` contents. `--force` allows replacement of unmanaged same-name
+skills; without it, user-authored skills are preserved.
+
+This is prompt packaging only. ai-memory does not run a runtime skill router,
+does not store durable memory in `SKILL.md`, and does not turn the
+auto-improvement loop into a skill-authoring system. Durable knowledge still
+lives in the wiki.
 
 ## Bootstrap an existing project
 

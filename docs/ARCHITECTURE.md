@@ -233,7 +233,7 @@ invariants below.
 | `memory_delete_page` | destructive | Delete a single page by exact `path`. Fires the admission chain (op=delete); idempotent. |
 | `memory_forget_sweep` | destructive | M8 retention pass. `dry_run=true` for preview. |
 | `memory_lint` | destructive | Rule-based + LLM contradiction findings → `wiki/_lint/`. |
-| `memory_install_self_routing` | read-only | Return the canonical routing snippet for CLAUDE.md / AGENTS.md. |
+| `memory_install_self_routing` | read-only | Return the canonical slim routing snippet plus managed Agent Skill payloads and target hints for CLAUDE.md / AGENTS.md installs. |
 
 `memory_briefing`, `memory_explore`, `memory_write_page`,
 `memory_install_self_routing`, `memory_read_page`, `memory_delete_page`,
@@ -244,13 +244,20 @@ prose halves of "what's going on", `memory_write_page` covers explicit
 durable annotations without abusing single-use handoffs,
 `memory_install_self_routing` exists for the meta case where the agent
 must re-write its own routing rules into a project's `CLAUDE.md` /
-`AGENTS.md`, `memory_read_page` complements `memory_query` for the
-"I need the full page, not a snippet" case (e.g. opening a decision page
-end-to-end), `memory_auto_improve` exposes a safe default-on learning review
-through the same approval/write path as pending writes, and `memory_delete_page` is the exact-path destructive pair
+`AGENTS.md` and install the companion managed Agent Skills into
+`.claude/skills` or `.agents/skills`, `memory_read_page` complements
+`memory_query` for the "I need the full page, not a snippet" case
+(e.g. opening a decision page end-to-end), `memory_auto_improve` exposes a
+safe default-on learning review through the same approval/write path as
+pending writes, and `memory_delete_page` is the exact-path destructive pair
 needed by admission-aware mirrors. `memory_handoff_cancel` is the safety valve
 for mistaken handoff creation. The narrow-surface discipline still holds —
 every new tool has to earn its slot — but the v1 count is 16, not 10.
+
+The managed Agent Skills are a narrow prompt-packaging exception to the
+otherwise wiki-centered architecture. They are static `SKILL.md` files that
+teach agents when to call ai-memory MCP tools; they are not durable wiki pages,
+not auto-improvement output, and not a runtime skill router inside ai-memory.
 
 MCP parameter aliases are intentionally sparse: `memory_query.query` accepts
 `q|search`, and limit fields accept `n` / `top_k` where shipped. Project and
@@ -268,7 +275,7 @@ checkpoints          restore-page         llm-test
 forget-sweep         lint                 auto-improve
 auto-improve-report  curator              pending-writes       embed
 generate-auth-token  setup-agent          bootstrap
-install-instructions reorg                purge-project
+install-instructions install-skills        reorg
 rename-project       move-project         audit-contamination
 uninstall            auth                 user
 ```

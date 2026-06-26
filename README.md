@@ -290,10 +290,11 @@ loopback server. With the local Docker quick start above, no
 `AI_MEMORY_SERVER_URL` override is needed.
 
 To remove ai-memory later, run `ai-memory uninstall --apply` from the
-same host environment. It removes ai-memory-owned config entries and
-generated plugin files only after matching their ai-memory signatures;
-use `--mcp-url` if you installed MCP with a custom endpoint, and
-`--mcp-name` only when you need to narrow removal to one matching entry.
+same host environment. It removes ai-memory-owned config entries, instruction
+blocks, managed skill files, and generated plugin files only after matching
+their ai-memory signatures; use `--mcp-url` if you installed MCP with a custom
+endpoint, and `--mcp-name` only when you need to narrow removal to one matching
+entry.
 
 ### Install Notes
 
@@ -315,10 +316,10 @@ use `--mcp-url` if you installed MCP with a custom endpoint, and
   `ai-memory install-hooks --agent <agent> --apply` after upgrading the binary.
   Remote/homelab servers must still be redeployed separately; local wrapper
   upgrade only updates the client machine. Existing project prompt files keep
-  working, but refresh the managed ai-memory routing block
+  working. Refresh the managed ai-memory routing package
   (`ai-memory install-instructions`, or `--target AGENTS.md` for AGENTS-based
-  projects) when you want new tool guidance such as proactive retrieval and
-  `memory_auto_improve`.
+  projects) when you want new tool guidance. The refresh writes the slim
+  markered snippet and managed Agent Skills from the same binary-owned assets.
 
 For Codex, OpenCode, OMP, Cursor, Claude Desktop, Gemini CLI, Antigravity CLI,
 Grok Build CLI, OpenClaw, VS Code Copilot, curl-based hook installs, source builds,
@@ -473,16 +474,18 @@ Useful entry points:
   `/wiki/web`. Set `--web-slug /` if you want the browser or custom SPA at
   `/wiki` itself.
 
-Install the routing snippet once so agents proactively call the right
-MCP tool for those prompts:
+Install the managed routing package once so agents proactively call the
+right MCP tool for those prompts:
 
 ```bash
 ai-memory install-instructions
 ```
 
-See [`docs/usage.md`](docs/usage.md) for handoff examples, proactive
-query routing, bootstrap details, web UI screenshots, and the raw-wiki
-inspection commands. CLI URL/auth configuration lives in
+That command writes or updates the slim `<!-- ai-memory:start -->` block and
+the managed ai-memory Agent Skills that carry the detailed routing guidance.
+See [`docs/usage.md`](docs/usage.md) for handoff examples, proactive query
+routing, bootstrap details, web UI screenshots, and the raw-wiki inspection
+commands. CLI URL/auth configuration lives in
 [`docs/install.md`](docs/install.md#configuring-the-cli-url-and-auth).
 
 ## LLM Providers
@@ -577,7 +580,7 @@ diagram, crate breakdown, schema notes, and invariants.
 | File | What it is |
 |---|---|
 | [`docs/install.md`](docs/install.md) | **Installation cookbook.** Every agent CLI, every alternative (curl, source build, no-docker, no-auth), and the server-on-a-different-machine (homelab/LAN) walkthrough. Read after the Quick start if your setup doesn't match the happy path. |
-| [`docs/usage.md`](docs/usage.md) | Handoffs, proactive memory queries, routing snippet, migration from other memory tools, web UI, raw-wiki inspection, and rules-vs-facts workflow. |
+| [`docs/usage.md`](docs/usage.md) | Handoffs, proactive memory queries, slim routing snippet + managed Agent Skills, migration from other memory tools, web UI, raw-wiki inspection, and rules-vs-facts workflow. |
 | [`docs/marker-file.md`](docs/marker-file.md) | `.ai-memory.toml` workspace/project routing for multi-client trees, mono-repos, worktrees, and work/personal separation. |
 | [`docs/auto-scope.md`](docs/auto-scope.md) | `[auto_scope]` modes for shared servers: default single-slot routing, session-aware isolation, and multi-user `per_actor` behavior. |
 | [`docs/macos.md`](docs/macos.md) | macOS install paths: native release binary (recommended), source build, the Docker wrapper, hook-platform notes, and current macOS limitations. |

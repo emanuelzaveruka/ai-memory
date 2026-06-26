@@ -192,11 +192,16 @@ basic-memory has ~25 tools, agentmemory has 53. Both have user confusion as a re
 | `memory_delete_page` | Delete a single exact-path page with admission hooks | destructive |
 | `memory_forget_sweep` | Retention sweep (M8); soft-delete below cold threshold; `dry_run=true` previews | destructive |
 | `memory_lint` | Rule-based + optional LLM contradiction findings → `wiki/_lint/<date>.md` | destructive |
-| `memory_install_self_routing` | Returns the canonical CLAUDE.md / AGENTS.md routing block + per-agent filename hints | read-only |
+| `memory_install_self_routing` | Returns the canonical slim CLAUDE.md / AGENTS.md routing block, managed Agent Skill payloads, target hints, and overwrite guidance | read-only |
 
 Tool param aliases stay narrow: shipped aliases cover `query|q|search` and
 `limit|n|top_k`; project and cwd parameters use canonical names unless the
 code adds a concrete alias.
+
+Managed ai-memory Agent Skills are prompt packaging for this tool-routing
+guidance only. They are installed as ordinary `SKILL.md` files so agents can
+progressively load detailed instructions, but ai-memory does not store durable
+memory in them and does not include a runtime skill router.
 
 ## 11. Identity & project scoping (3-tuple from day one)
 
@@ -231,7 +236,7 @@ To stay scoped:
 - No alternative embedded vector backends (sqlite-vec only).
 - No alternative graph DB (SQL recursive CTEs only).
 - No multimodal (text only).
-- No "skills" / slash-command bundle in v1 (agentmemory plugin format) - focus on hooks + MCP first.
+- No general "skills" / slash-command bundle in v1 (agentmemory plugin format). The narrow exception is the managed ai-memory Agent Skills that package routing guidance for agents; hooks + MCP remain the product surface.
 - No LongMemEval-style benchmark harness in v1 - add in v0.4.
 
 ## 14. Mistakes-to-avoid checklist (from issue research)

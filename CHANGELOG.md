@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `install-instructions` now refreshes a slim markered CLAUDE.md/AGENTS.md
+  snippet and installs or updates managed ai-memory Agent Skills by default,
+  with `--no-skills` for snippet-only refreshes and `--skills-*` flags for
+  scope, agent family, target root, and forced unmanaged replacement. Added
+  `install-skills` for refreshing those prompt-packaging skills directly, and
+  `memory_install_self_routing` now returns the slim block, managed skill
+  payloads, target hints, and overwrite guidance for agents that install
+  routing through MCP.
+
 ## [1.3.0] - 2026-06-24
 
 ### Added
