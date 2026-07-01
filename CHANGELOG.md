@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `user_prompt_submit`/`stop`/`session_end`, which carry no marker) is dropped
   too — not just the marker-bearing tool-use events.
 
+### Fixed
+- Native Windows/Git Bash installs now normalize hook cwd, stored project
+  `repo_path`, and the home-directory guard consistently across slash styles,
+  including legacy rows persisted with backslashes. `AI_MEMORY_HOME` now feeds
+  the same home guard as `$HOME`, and Git-backed helpers preserve bare-repo
+  fallback semantics while limiting CLI git fallbacks to path/open failures.
+
 ## [1.4.1] - 2026-06-28
 
 ## [1.4.0] - 2026-06-26
