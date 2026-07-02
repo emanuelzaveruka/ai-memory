@@ -58,6 +58,15 @@ pub struct AutoImproveCandidateSession {
     pub ended_at: i64,
 }
 
+/// Open session selected for manual finalization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenSession {
+    /// Session id.
+    pub session_id: SessionId,
+    /// Captured session cwd, if available.
+    pub cwd: Option<String>,
+}
+
 /// The latest version of a page's stored content, used as a DB-backed
 /// fallback when the on-disk markdown read fails (index/disk skew). The
 /// markdown file is the source of truth, but the store keeps a faithful copy
@@ -1009,6 +1018,83 @@ impl ReaderPool {
             row_opt
                 .map(|bytes| SessionId::from_slice(&bytes).map_err(StoreError::from))
                 .transpose()
+        })
+        .await
+    }
+
+    /// Return open sessions matching one scoped project and agent.
+    ///
+    /// Results are newest-first so callers can default to finalizing only the
+    /// latest open session while offering an explicit all-sessions mode.
+    ///
+    /// # Errors
+    /// Propagates any SQL or pool error.
+    pub async fn open_sessions_for_scope_agent(
+        &self,
+        workspace_id: WorkspaceId,
+        project_id: ProjectId,
+        agent_kind: AgentKind,
+        limit: Option<usize>,
+    ) -> StoreResult<Vec<OpenSession>> {
+        let agent = agent_kind.as_str().to_string();
+        self.with_conn(move |conn| {
+            let limit_clause = limit.map_or(String::new(), |n| format!(" LIMIT {}", n.max(1)));
+            let sql = format!(
+                "SELECT id, cwd FROM sessions \
+                 WHERE workspace_id = ?1 AND project_id = ?2 \
+                   AND agent_kind = ?3 AND ended_at IS NULL \
+                 ORDER BY started_at DESC, id DESC{limit_clause}"
+            );
+            let mut stmt = conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(
+                params![workspace_id.as_bytes(), project_id.as_bytes(), agent],
+                |row| {
+                    let id_bytes: Vec<u8> = row.get(0)?;
+                    let cwd: Option<String> = row.get(1)?;
+                    Ok((id_bytes, cwd))
+                },
+            )?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (id_bytes, cwd) = row?;
+                out.push(OpenSession {
+                    session_id: SessionId::from_slice(&id_bytes)?,
+                    cwd,
+                });
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    /// True when a session exists, belongs to the resolved scope and agent, and
+    /// is still open. Used by SessionEnd ingestion to avoid synthesizing pages
+    /// or handoffs for stale, cross-project, or cross-agent synthetic events.
+    ///
+    /// # Errors
+    /// Propagates any SQL or pool error.
+    pub async fn session_is_open_for_scope_agent(
+        &self,
+        session_id: SessionId,
+        workspace_id: WorkspaceId,
+        project_id: ProjectId,
+        agent_kind: AgentKind,
+    ) -> StoreResult<bool> {
+        let agent = agent_kind.as_str().to_string();
+        self.with_conn(move |conn| {
+            let count: u64 = conn.query_row(
+                "SELECT COUNT(*) FROM sessions \
+                 WHERE id = ?1 AND workspace_id = ?2 AND project_id = ?3 \
+                   AND agent_kind = ?4 AND ended_at IS NULL",
+                params![
+                    session_id.as_bytes(),
+                    workspace_id.as_bytes(),
+                    project_id.as_bytes(),
+                    agent,
+                ],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
         })
         .await
     }

@@ -23,7 +23,7 @@
 | Windows via WSL2 | Supported | Use the Linux install path inside WSL2 when the agent runs there. |
 | Native Windows | Experimental | Tagged releases publish `ai-memory-windows-x86_64.zip` with `ai-memory.exe`; Docker Desktop wrapper and source builds are also available. Claude Code uses Claude exec form with a real native `ai-memory.exe` by default; other script-hook agents use the current PowerShell defaults pending harness feedback. See [`docs/windows.md`](docs/windows.md). |
 | Claude Code | Supported | MCP config + lifecycle hooks. |
-| Codex | Supported | MCP config + lifecycle hooks. |
+| Codex | Supported | MCP config + lifecycle hooks; no automatic true session-end hook, so run `ai-memory finalize-session` when you need a final summary/handoff. |
 | OpenCode | Supported | Remote MCP config + generated TypeScript plugin. |
 | Cursor | Supported | MCP config + lifecycle hooks. |
 | Gemini CLI | Supported | MCP config + lifecycle hooks. |
@@ -73,7 +73,8 @@ priors are at the [bottom](#influences-and-prior-art).
   Same page path can exist in two projects without collision; a
   rename is one column update; a purge is one `rm -rf`.
 - **Karpathy-style LLM wiki.** Pages are compiled from observations
-  at session-end (or PreCompact), not retrieved over raw logs.
+  at session-end (or PreCompact; Codex can use `ai-memory finalize-session`
+  for a manual final close), not retrieved over raw logs.
   Supersession chain + git-versioned markdown means you can
   time-travel with `ai-memory checkpoints`, `restore-page`, or raw `git log`.
 - **Built-in `/web` browser.** Read-only HTML UI for the wiki -
@@ -96,7 +97,9 @@ priors are at the [bottom](#influences-and-prior-art).
   all HTTP clients of the running server - never touch SQLite or
   wiki files directly. `status` also reports passive LLM/embedding
   provider health from the last real provider call. Server is the
-  single source of truth.
+  single source of truth. `finalize-session` is the exception: it reads the
+  local SQLite index only to find matching open sessions, then posts synthetic
+  `session-end` hooks back to the server.
 - **LLM is opt-in.** Zero-LLM mode still gives you FTS5 search +
   rule-based summarisation. Add a provider when you want consolidated
   pages, lint contradictions, or staged auto-improvement proposals.

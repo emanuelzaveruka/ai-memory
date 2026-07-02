@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `ai-memory finalize-session`, a supported manual Codex finalization
+  flow. It defaults to the latest open Codex session in the current
+  workspace/project and posts a synthetic `session-end` hook so summaries,
+  handoffs, and auto-improvement eligibility use the canonical SessionEnd path.
+
 ### Fixed
 - Native hook spool delivery no longer relies only on the cancellation-prone
   `session-end` hook to start the detached drainer. `stop` and `pre-compact`

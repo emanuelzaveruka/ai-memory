@@ -38,10 +38,10 @@ pub use ops::{EmbeddingWrite, MoveSummary, PurgeSummary, ReorgSummary};
 pub use reader::{
     ActivityWindow, AutoImproveCandidateSession, BriefingPage, BriefingSnapshot,
     ContaminationFinding, ContaminationReport, ContaminationSummary, DecayCandidate,
-    DerivedIndexStatus, EmbeddingTripleCount, HealthDetail, HealthPage, ObservationHit, PageAuthor,
-    PageHit, PageHitWithMeta, PageLinks, PageMeta, PageSummary, ProjectSummary, ReaderPool,
-    ReindexTargetStatus, RelatedPage, ScopeRow, StatusCounts, StoredEmbedding, StoredPageBody,
-    WorkspaceScopeRow, WorkspaceSummary, f32_vec_to_bytes,
+    DerivedIndexStatus, EmbeddingTripleCount, HealthDetail, HealthPage, ObservationHit,
+    OpenSession, PageAuthor, PageHit, PageHitWithMeta, PageLinks, PageMeta, PageSummary,
+    ProjectSummary, ReaderPool, ReindexTargetStatus, RelatedPage, ScopeRow, StatusCounts,
+    StoredEmbedding, StoredPageBody, WorkspaceScopeRow, WorkspaceSummary, f32_vec_to_bytes,
 };
 pub use scope::{
     ResolvedScope, ScopeName, ScopeResolutionError, ScopeResolver, WORKSPACE_PROJECT_PAIR_REQUIRED,

@@ -3760,6 +3760,10 @@ model = "gpt-5"
             parsed["hooks"]["SessionStart"].is_array(),
             "SessionStart hook should be present"
         );
+        assert!(
+            parsed["hooks"].get("SessionEnd").is_none(),
+            "Codex has no reliable true SessionEnd hook; install must omit it"
+        );
     }
 
     #[test]

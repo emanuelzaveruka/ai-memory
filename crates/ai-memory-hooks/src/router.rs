@@ -919,6 +919,20 @@ async fn process(
     )
     .await?;
 
+    if matches!(env.event, HookEvent::SessionEnd)
+        && !state
+            .reader
+            .session_is_open_for_scope_agent(session_id, ws, proj, env.agent)
+            .await?
+    {
+        info!(
+            session = %session_id,
+            agent = %env.agent.as_str(),
+            "ignoring SessionEnd for missing, mismatched, or already-ended session"
+        );
+        return Ok(());
+    }
+
     // Hooks are fire-and-forget and may arrive out of order. Begin the
     // session idempotently before every observation so a resumed agent
     // session, or a prompt racing ahead of SessionStart, cannot trip the
@@ -3034,6 +3048,245 @@ mod tests {
                 .any(|p| p.path.as_str().starts_with("sessions/")),
             "SessionEnd must write a heuristic sessions/<id>.md page regardless of the flag; got {:?}",
             pages.iter().map(|p| p.path.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_does_not_end_session() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        let sid = "22222222-2222-2222-2222-222222222222";
+
+        let env = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "stop".into(),
+                agent: Some("codex".into()),
+                ..Default::default()
+            },
+            serde_json::json!({ "session_id": sid }),
+        );
+        process(&state, env, None).await.unwrap();
+
+        let completed = state
+            .reader
+            .latest_completed_session_for_project(state.workspace_id, state.project_id)
+            .await
+            .unwrap();
+        assert!(
+            completed.is_none(),
+            "Stop must not be treated as SessionEnd"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_end_closes_only_matching_scoped_session() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        let target = state
+            .writer
+            .get_or_create_project(state.workspace_id, "target", None)
+            .await
+            .unwrap();
+        let other = state
+            .writer
+            .get_or_create_project(state.workspace_id, "other", None)
+            .await
+            .unwrap();
+        let target_sid = SessionId::new();
+        let other_project_sid = SessionId::new();
+        let other_agent_sid = SessionId::new();
+        for (id, project_id, agent) in [
+            (target_sid, target, AgentKind::Codex),
+            (other_project_sid, other, AgentKind::Codex),
+            (other_agent_sid, target, AgentKind::ClaudeCode),
+        ] {
+            state
+                .writer
+                .begin_session(NewSession {
+                    id,
+                    workspace_id: state.workspace_id,
+                    project_id,
+                    agent_kind: agent,
+                    cwd: Some(std::path::PathBuf::from("/tmp/target")),
+                })
+                .await
+                .unwrap();
+        }
+
+        let env = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "session-end".into(),
+                agent: Some("codex".into()),
+                cwd: Some("/tmp/target".into()),
+                workspace: Some("default".into()),
+                project: Some("target".into()),
+                ..Default::default()
+            },
+            serde_json::json!({ "session_id": target_sid.to_string(), "cwd": "/tmp/target" }),
+        );
+        process(&state, env, None).await.unwrap();
+
+        assert_eq!(
+            state
+                .reader
+                .latest_completed_session_for_project(state.workspace_id, target)
+                .await
+                .unwrap(),
+            Some(target_sid)
+        );
+        assert_eq!(
+            state
+                .reader
+                .open_sessions_for_scope_agent(state.workspace_id, other, AgentKind::Codex, None)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "other project Codex session must remain open"
+        );
+        assert_eq!(
+            state
+                .reader
+                .open_sessions_for_scope_agent(
+                    state.workspace_id,
+                    target,
+                    AgentKind::ClaudeCode,
+                    None
+                )
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "other agent session in same project must remain open"
+        );
+    }
+
+    #[tokio::test]
+    async fn mismatched_session_end_does_not_create_summary_or_handoff() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        let target = state
+            .writer
+            .get_or_create_project(state.workspace_id, "target", None)
+            .await
+            .unwrap();
+        let other = state
+            .writer
+            .get_or_create_project(state.workspace_id, "other", None)
+            .await
+            .unwrap();
+        let wrong_project_sid = SessionId::new();
+        let wrong_agent_sid = SessionId::new();
+        for (id, project_id, agent) in [
+            (wrong_project_sid, other, AgentKind::Codex),
+            (wrong_agent_sid, target, AgentKind::ClaudeCode),
+        ] {
+            state
+                .writer
+                .begin_session(NewSession {
+                    id,
+                    workspace_id: state.workspace_id,
+                    project_id,
+                    agent_kind: agent,
+                    cwd: Some(std::path::PathBuf::from("/tmp/target")),
+                })
+                .await
+                .unwrap();
+        }
+
+        for sid in [wrong_project_sid, wrong_agent_sid] {
+            let env = HookEnvelope::from_query_and_body(
+                HookQuery {
+                    event: "session-end".into(),
+                    agent: Some("codex".into()),
+                    cwd: Some("/tmp/target".into()),
+                    workspace: Some("default".into()),
+                    project: Some("target".into()),
+                    ..Default::default()
+                },
+                serde_json::json!({ "session_id": sid.to_string(), "cwd": "/tmp/target" }),
+            );
+            process(&state, env, None).await.unwrap();
+        }
+
+        let pages = state
+            .reader
+            .recent_pages_for_project(state.workspace_id, target, 20)
+            .await
+            .unwrap();
+        assert!(
+            pages
+                .iter()
+                .all(|p| !p.path.as_str().starts_with("sessions/")),
+            "mismatched SessionEnd must not write target summary pages: {:?}",
+            pages.iter().map(|p| p.path.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            state
+                .reader
+                .latest_open_handoff(state.workspace_id, target, None)
+                .await
+                .unwrap()
+                .is_none(),
+            "mismatched SessionEnd must not create a target handoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn already_ended_session_end_does_not_create_summary_or_handoff() {
+        let tmp = TempDir::new().unwrap();
+        let state = make_state(&tmp).await;
+        let target = state
+            .writer
+            .get_or_create_project(state.workspace_id, "target", None)
+            .await
+            .unwrap();
+        let sid = SessionId::new();
+        state
+            .writer
+            .begin_session(NewSession {
+                id: sid,
+                workspace_id: state.workspace_id,
+                project_id: target,
+                agent_kind: AgentKind::Codex,
+                cwd: Some(std::path::PathBuf::from("/tmp/target")),
+            })
+            .await
+            .unwrap();
+        state.writer.end_session(sid, None).await.unwrap();
+
+        let env = HookEnvelope::from_query_and_body(
+            HookQuery {
+                event: "session-end".into(),
+                agent: Some("codex".into()),
+                cwd: Some("/tmp/target".into()),
+                workspace: Some("default".into()),
+                project: Some("target".into()),
+                ..Default::default()
+            },
+            serde_json::json!({ "session_id": sid.to_string(), "cwd": "/tmp/target" }),
+        );
+        process(&state, env, None).await.unwrap();
+
+        let pages = state
+            .reader
+            .recent_pages_for_project(state.workspace_id, target, 20)
+            .await
+            .unwrap();
+        assert!(
+            pages
+                .iter()
+                .all(|p| !p.path.as_str().starts_with("sessions/")),
+            "already-ended synthetic SessionEnd must not write summary pages"
+        );
+        assert!(
+            state
+                .reader
+                .latest_open_handoff(state.workspace_id, target, None)
+                .await
+                .unwrap()
+                .is_none(),
+            "already-ended synthetic SessionEnd must not create a handoff"
         );
     }
 

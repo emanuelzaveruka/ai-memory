@@ -17,6 +17,7 @@ pub mod curator;
 pub mod data_purge;
 pub mod delete_page;
 pub mod embed;
+pub mod finalize_session;
 pub mod forget_sweep;
 pub mod generate_auth_token;
 pub mod hook;

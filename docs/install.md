@@ -515,6 +515,16 @@ docker run --rm akitaonrails/ai-memory:latest \
         --auth-token "$TOKEN"
 ```
 
+Codex still does not expose a reliable true session-end hook. Its `Stop` hook is
+captured as a turn/stop observation only; ai-memory does **not** treat it as
+SessionEnd. When you need the final session summary, handoff, and
+auto-improvement eligibility for the current project, run:
+
+```bash
+ai-memory finalize-session
+# add --all to close every matching open Codex session in this workspace/project
+```
+
 ### OpenCode
 
 ```bash

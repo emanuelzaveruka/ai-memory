@@ -92,6 +92,8 @@ pub enum Command {
     AutoImproveReport(AutoImproveReportArgs),
     /// Run auto-improvement for one completed session.
     AutoImprove(AutoImproveArgs),
+    /// Manually finalize the latest open Codex session for this project.
+    FinalizeSession(FinalizeSessionArgs),
     /// Review, approve, or reject staged auto-improvement proposals.
     PendingWrites(PendingWritesArgs),
     /// Compute + store embeddings for every latest page (M9).
@@ -816,6 +818,27 @@ pub enum AgentChoice {
     /// capture works but handoff injection does not — recover the prior
     /// session's handoff via the MCP `memory_handoff_accept` tool.
     Grok,
+}
+
+/// Arguments for `finalize-session`.
+#[derive(Debug, Args)]
+pub struct FinalizeSessionArgs {
+    /// Agent kind to finalize. Defaults to Codex because Codex has no reliable
+    /// true SessionEnd hook.
+    #[arg(long, value_enum, default_value_t = AgentChoice::Codex)]
+    pub agent: AgentChoice,
+    /// Workspace name. Defaults to `default`.
+    #[arg(long, default_value_t = crate::config::DEFAULT_WORKSPACE.to_string())]
+    pub workspace: String,
+    /// Project name. When omitted, auto-derived from the current project.
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Finalize every matching open session instead of just the latest one.
+    #[arg(long)]
+    pub all: bool,
+    /// Emit a JSON summary.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// MCP client to render configuration for. Includes both the

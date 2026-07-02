@@ -85,6 +85,7 @@ async fn main() -> Result<()> {
         Command::Curator(args) => commands::curator::run(&config, args).await,
         Command::AutoImproveReport(args) => commands::auto_improve_report::run(&config, args).await,
         Command::AutoImprove(args) => commands::auto_improve::run(&config, args).await,
+        Command::FinalizeSession(args) => commands::finalize_session::run(&config, args).await,
         Command::PendingWrites(args) => commands::pending_writes::run(&config, args).await,
         Command::Embed(args) => commands::embed::run(&config, args).await,
         Command::GenerateAuthToken(args) => commands::generate_auth_token::run(&config, args),
