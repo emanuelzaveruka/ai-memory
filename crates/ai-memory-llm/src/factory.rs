@@ -13,6 +13,7 @@ use crate::GeminiProvider;
 use crate::OpenAiCompatProvider;
 use crate::OpenAiOAuthProvider;
 use crate::OpenAiProvider;
+use crate::OpenCodeProvider;
 use crate::auth::{AuthRequirement, ProviderAuth};
 use crate::embedding::{Embedder, OpenAiEmbedder, VoyageEmbedder};
 use crate::error::{LlmError, LlmResult};
@@ -36,6 +37,8 @@ pub enum ProviderChoice {
     Copilot,
     /// Anthropic Messages API via a Claude-subscription OAuth token.
     AnthropicOAuth,
+    /// OpenCode Zen/Go cloud API (OpenAI-compatible endpoint).
+    OpenCode,
 }
 
 impl ProviderChoice {
@@ -50,6 +53,7 @@ impl ProviderChoice {
             Self::OpenAiOAuth => "openai-oauth",
             Self::Copilot => "copilot",
             Self::AnthropicOAuth => "anthropic-oauth",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -72,6 +76,9 @@ impl ProviderChoice {
             Self::OpenAiOAuth => AuthRequirement::OpenAiOAuthToken,
             Self::Copilot => AuthRequirement::CopilotToken,
             Self::AnthropicOAuth => AuthRequirement::AnthropicOAuthToken,
+            Self::OpenCode => AuthRequirement::RequiredApiKey {
+                env_var: "OPENCODE_API_KEY",
+            },
         }
     }
 }
@@ -225,6 +232,10 @@ pub fn build_provider(config: ProviderConfig) -> LlmResult<Arc<dyn LlmProvider>>
                 provider = provider.with_base_url(url);
             }
             Ok(Arc::new(provider))
+        }
+        ProviderChoice::OpenCode => {
+            let key = config.auth.require_api_key()?;
+            Ok(Arc::new(OpenCodeProvider::new(key, config.model)?))
         }
     }
 }

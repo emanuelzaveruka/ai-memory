@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- OpenCode Zen/Go is now a first-class LLM provider:
+  `AI_MEMORY_LLM_PROVIDER=opencode` (alias `opencode-zen`) routes
+  consolidation through `https://opencode.ai/zen/go/v1` using the OpenAI
+  chat-completions wire format. Authenticate with `OPENCODE_API_KEY`
+  (key from `opencode.ai/auth`); the default model is `claude-sonnet-4-6`.
+  `ai-memory llm-test --provider opencode` exercises it end-to-end ([#147]).
+- `docker/docker-compose.yml` now loads provider credentials from a
+  gitignored `docker/.env` via `env_file` (optional — existing deployments
+  without that file keep working), replacing the commented-out inline
+  provider blocks ([#147]).
+
 ### Fixed
 - The detached drainer's `logs/hook-drain.log` now rotates once it exceeds
   1 MiB (previous contents move to `hook-drain.log.old`), so an agent
