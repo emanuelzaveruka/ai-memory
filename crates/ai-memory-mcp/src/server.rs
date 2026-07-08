@@ -641,13 +641,28 @@ struct ExploreArgs {
     workspace: Option<String>,
 }
 
+// The `anyOf` encodes the "you MUST pass exactly one of path/query"
+// contract in the machine-readable schema (issue #155): each branch
+// demands the key's PRESENCE via `required` AND a non-null `type`, because
+// clients that null-fill defaulted args (OpenCode) would satisfy a bare
+// `required` with `path: null` and still hit the runtime error. Encoding
+// it here lets schema-respecting clients refuse the invalid call before
+// it ever reaches the server.
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(extend("anyOf" = [
+    {"required": ["path"], "properties": {"path": {"type": "string"}}},
+    {"required": ["query"], "properties": {"query": {"type": "string"}}},
+]))]
 struct ReadPageArgs {
-    /// FTS5 query to find the page (searches and returns the top hit's full body).
-    /// Ignored when `path` is provided.
+    /// FTS5 query to find the page (searches and returns the top hit's full
+    /// body). You MUST pass exactly one of `query` or `path` — never neither,
+    /// and never `null`. Ignored when `path` is provided.
     #[serde(default, alias = "q", alias = "search")]
     query: Option<String>,
-    /// Exact wiki path (e.g. `notes/foo.md`). Takes precedence over `query`.
+    /// Exact wiki path (e.g. `notes/foo.md`), typically taken verbatim from a
+    /// `memory_recent` or `memory_query` hit. You MUST pass exactly one of
+    /// `path` or `query` — never neither, and never `null`. Takes precedence
+    /// over `query`.
     #[serde(default)]
     path: Option<String>,
     /// Project to read from. Omit to target the project you're currently
@@ -1759,20 +1774,23 @@ impl AiMemoryServer {
     }
 
     /// Fetch the full body of a single wiki page.
-    #[tool(description = "Fetch the FULL body of a wiki page for the current \
-        project by default. Pass `workspace` + `project` together only when \
-        the user names a sibling workspace/project. Use this when the user asks to read, open, or show a specific \
-        page by name or topic — not just snippets. \
+    #[tool(description = "Fetch the FULL body of a wiki page. You MUST pass \
+        exactly one of `path` or `query` — a call with neither (or with \
+        nulls) is invalid and will error; do NOT retry it unchanged. \
         \
         Two modes: \
-        (1) pass `query` — runs an FTS5 search and returns the top hit's \
-        complete body (title + markdown, frontmatter stripped); \
-        (2) pass `path` — direct lookup by the page's relative wiki path \
-        (e.g. `notes/budget.md`). `path` takes precedence when both are given. \
+        (1) pass `path` — direct lookup by the page's relative wiki path, \
+        taken verbatim from a `memory_recent`/`memory_query` hit (e.g. \
+        `{\"path\": \"notes/budget.md\"}`); \
+        (2) pass `query` — runs an FTS5 search and returns the top hit's \
+        complete body. `path` takes precedence when both are given. \
         \
-        Returns `{ path, title, body, frontmatter }` (plus `served_from` when \
-        a missing markdown file is served from the DB fallback). Errors if the page is \
-        not found or neither argument is supplied.")]
+        Defaults to the current project; pass `workspace` + `project` \
+        together only when the user names a sibling workspace/project. Use \
+        this when the user asks to read, open, or show a specific page by \
+        name or topic — not just snippets. Returns `{ path, title, body, \
+        frontmatter }` (plus `served_from` when a missing markdown file is \
+        served from the DB fallback). Errors if the page is not found.")]
     async fn memory_read_page(
         &self,
         Parameters(args): Parameters<ReadPageArgs>,
@@ -1815,8 +1833,15 @@ impl AiMemoryServer {
                 }
             }
         } else {
+            // Instructive on purpose: looping clients (issue #155 — OpenCode
+            // null-fills both args) read this text. Tell the model exactly
+            // what a valid retry looks like instead of a dead-end.
             return Err(McpError::invalid_params(
-                "provide either `query` or `path`",
+                "memory_read_page requires exactly one of `path` or `query` \
+                 as a non-null string — do not retry with both null. Pass the \
+                 page's path from a memory_recent/memory_query hit, e.g. \
+                 {\"path\": \"notes/topic.md\"}, or search by content with \
+                 {\"query\": \"topic keywords\"}.",
                 None,
             ));
         };
@@ -3699,6 +3724,57 @@ mod tests {
             .map(|t| t.text.clone())
             .unwrap();
         assert!(text.contains("patterns.md"), "expected hit; got {text}");
+    }
+
+    // Issue #155: the "exactly one of path/query" contract must live in the
+    // machine-readable schema, with branches demanding presence AND a
+    // non-null type — a bare `required` is satisfied by OpenCode-style
+    // `path: null` filling. Pins against a schemars upgrade silently
+    // dropping the `extend` attribute.
+    #[test]
+    fn read_page_schema_encodes_one_of_path_or_query() {
+        let schema = serde_json::to_value(schemars::schema_for!(ReadPageArgs)).unwrap();
+        let any_of = schema
+            .get("anyOf")
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("schema must carry the anyOf constraint: {schema}"));
+        for key in ["path", "query"] {
+            let branch = any_of
+                .iter()
+                .find(|b| b["required"] == serde_json::json!([key]))
+                .unwrap_or_else(|| panic!("missing anyOf branch requiring `{key}`: {schema}"));
+            assert_eq!(
+                branch["properties"][key]["type"],
+                serde_json::json!("string"),
+                "`{key}` branch must demand a non-null string so null-filling \
+                 clients cannot satisfy it"
+            );
+        }
+    }
+
+    // Issue #155: the neither-arg error must teach a looping model what a
+    // valid retry looks like, naming both args and a concrete example.
+    #[tokio::test]
+    async fn memory_read_page_without_args_returns_instructive_error() {
+        let (tmp, store, server, _ws, _pj) = setup_server().await;
+        let wiki = Wiki::new(tmp.path(), store.writer.clone()).unwrap();
+        let err = server
+            .with_wiki(wiki)
+            .memory_read_page(
+                Parameters(ReadPageArgs {
+                    query: None,
+                    path: None,
+                    project: None,
+                    workspace: None,
+                }),
+                rmcp::handler::server::tool::Extension(test_parts_default()),
+            )
+            .await
+            .expect_err("neither arg must fail closed");
+        let msg = err.to_string();
+        for needle in ["`path`", "`query`", "notes/topic.md", "do not retry"] {
+            assert!(msg.contains(needle), "error must contain {needle:?}: {msg}");
+        }
     }
 
     #[tokio::test]

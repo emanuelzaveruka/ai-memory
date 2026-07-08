@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `memory_read_page`'s input schema now encodes the "exactly one of
+  `path` or `query`" contract as an `anyOf` whose branches demand the
+  key's presence *and* a non-null string, so MCP clients that null-fill
+  defaulted arguments (observed with OpenCode 1.17.x) are schema-blocked
+  from sending the neither-arg call instead of looping on a server
+  error. The runtime error for a bare call is now instructive — it names
+  both arguments and shows a concrete `{"path": "notes/topic.md"}`
+  example so a looping model can self-correct — and the tool/argument
+  descriptions state the MUST-pass-one rule up front ([#155]).
+
 ## [1.9.0] - 2026-07-07
 
 ### Added
