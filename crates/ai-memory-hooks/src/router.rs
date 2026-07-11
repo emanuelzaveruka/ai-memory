@@ -232,10 +232,8 @@ struct TokenBucket {
     last_refill: std::time::Instant,
 }
 
-/// Per-source (session) admission rate limiter that runs BEFORE the global
-/// ingest semaphore, so one runaway source can't exhaust the shared ingest
-/// capacity for everyone — the 2026-06-29 subagent-flood/OOM shape. A bounded
-/// LRU of token buckets; disabled (pass-through) when `refill_per_sec <= 0`.
+/// Per-source admission rate limiter. A bounded LRU of token buckets; disabled
+/// (pass-through) when `refill_per_sec <= 0`.
 pub struct IngestRateLimiter {
     buckets: HashMap<String, TokenBucket>,
     order: VecDeque<String>,
@@ -264,24 +262,6 @@ impl IngestRateLimiter {
         }
     }
 
-    /// Build from env: `AI_MEMORY_HOOK_RATE_PER_SEC` (tokens/sec per source; 0
-    /// or unset = disabled, no behaviour change) and `AI_MEMORY_HOOK_RATE_BURST`
-    /// (default = per_sec, min 1).
-    #[must_use]
-    pub fn from_env() -> Self {
-        let per_sec = std::env::var("AI_MEMORY_HOOK_RATE_PER_SEC")
-            .ok()
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .filter(|v| *v > 0.0)
-            .unwrap_or(0.0);
-        let burst = std::env::var("AI_MEMORY_HOOK_RATE_BURST")
-            .ok()
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .filter(|v| *v > 0.0)
-            .unwrap_or_else(|| per_sec.max(1.0));
-        Self::new(per_sec, burst)
-    }
-
     /// Try to admit one event for `key` at `now`. `true` when disabled or a
     /// token was available; `false` when the key is over its burst. O(1)
     /// amortized; evicts the oldest-inserted key over the cap (a re-inserted
@@ -290,15 +270,16 @@ impl IngestRateLimiter {
         if self.refill_per_sec <= 0.0 {
             return true;
         }
-        if !self.buckets.contains_key(key) {
+        let key = bounded_rate_key(key);
+        if !self.buckets.contains_key(&key) {
             self.buckets.insert(
-                key.to_string(),
+                key.clone(),
                 TokenBucket {
                     tokens: self.burst,
                     last_refill: now,
                 },
             );
-            self.order.push_back(key.to_string());
+            self.order.push_back(key.clone());
             while self.buckets.len() > self.max_keys {
                 if let Some(oldest) = self.order.pop_front() {
                     self.buckets.remove(&oldest);
@@ -307,7 +288,9 @@ impl IngestRateLimiter {
                 }
             }
         }
-        let bucket = self.buckets.get_mut(key).expect("present after insert");
+        let Some(bucket) = self.buckets.get_mut(&key) else {
+            return true;
+        };
         let elapsed = now
             .saturating_duration_since(bucket.last_refill)
             .as_secs_f64();
@@ -326,6 +309,54 @@ impl IngestRateLimiter {
     fn len(&self) -> usize {
         self.buckets.len()
     }
+
+    #[cfg(test)]
+    fn max_stored_key_len(&self) -> usize {
+        self.buckets.keys().map(String::len).max().unwrap_or(0)
+    }
+}
+
+const INGEST_RATE_MAX_KEY_BYTES: usize = 128;
+
+fn bounded_rate_key(raw: &str) -> String {
+    if raw.len() <= INGEST_RATE_MAX_KEY_BYTES {
+        return raw.to_string();
+    }
+    format!("h:{:016x}", fnv1a64(raw.as_bytes()))
+}
+
+fn log_rate_key(raw: &str) -> String {
+    bounded_rate_key(raw)
+        .chars()
+        .map(|c| if c.is_control() { '_' } else { c })
+        .collect()
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn ingest_rate_key(env: &HookEnvelope, actor_user: Option<&str>) -> String {
+    let user = actor_user.unwrap_or("");
+    if let Some(session_id) = env.session_id.as_deref().filter(|s| !s.is_empty()) {
+        return format!("u:{user}\ns:{session_id}");
+    }
+    let fallback = serde_json::to_string(&env.raw).unwrap_or_default();
+    format!(
+        "u:{user}\nmissing:{}:{}:{}:{}:{}:{}:{:016x}",
+        env.agent.as_str(),
+        format_args!("{:?}", env.event),
+        env.cwd.as_deref().unwrap_or(""),
+        env.workspace_override.as_deref().unwrap_or(""),
+        env.project_override.as_deref().unwrap_or(""),
+        env.project_strategy.as_str(),
+        fnv1a64(fallback.as_bytes())
+    )
 }
 
 /// Shared state passed to the hook handler.
@@ -364,10 +395,9 @@ pub struct HookState {
     /// In-flight hook processing limiter. Requests acquire one permit before
     /// spawning work and return 429 immediately when saturated.
     pub ingest_semaphore: Arc<tokio::sync::Semaphore>,
-    /// Per-source (session) ingest rate limiter, checked BEFORE the global
-    /// `ingest_semaphore` so one runaway source can't exhaust shared capacity
-    /// and 429 everyone. Disabled (pass-through) unless
-    /// `AI_MEMORY_HOOK_RATE_PER_SEC` is set.
+    /// Per-source ingest rate limiter. The global `ingest_semaphore` is acquired
+    /// first for stored events so globally rejected events do not spend source
+    /// tokens. Disabled (pass-through) unless configured by the CLI.
     pub ingest_rate: Arc<tokio::sync::Mutex<IngestRateLimiter>>,
     /// Opt-in (`AI_MEMORY_CONSOLIDATE_ON_SESSION_END`): when true and a
     /// `consolidator` is present, SessionEnd also runs LLM consolidation on
@@ -425,23 +455,20 @@ async fn handle_hook(
     if should_drop_subagent(&state, &env, &actor_key).await {
         return (StatusCode::ACCEPTED, "subagent capture dropped");
     }
-    // Per-source rate limit BEFORE the global semaphore, so one runaway
-    // session can't drain shared ingest capacity and 429 everyone. Keyed by
-    // session id (the flooding-agent shape); disabled unless configured.
-    let rate_key = env.session_id.clone().unwrap_or_default();
+    let Ok(permit) = state.ingest_semaphore.clone().try_acquire_owned() else {
+        warn!("hook ingest saturated; dropping event with 429");
+        return (StatusCode::TOO_MANY_REQUESTS, "hook queue full");
+    };
+    let rate_key = ingest_rate_key(&env, actor_user.as_deref());
     if !state
         .ingest_rate
         .lock()
         .await
         .try_take(&rate_key, std::time::Instant::now())
     {
-        warn!(source = %rate_key, "hook ingest rate limit exceeded for source; dropping event with 429");
+        warn!(source = %log_rate_key(&rate_key), "hook ingest rate limit exceeded for source; dropping event with 429");
         return (StatusCode::TOO_MANY_REQUESTS, "hook source rate limited");
     }
-    let Ok(permit) = state.ingest_semaphore.clone().try_acquire_owned() else {
-        warn!("hook ingest saturated; dropping event with 429");
-        return (StatusCode::TOO_MANY_REQUESTS, "hook queue full");
-    };
     tokio::spawn(async move {
         let _permit = permit;
         process_envelope(state, env, actor_user).await;
@@ -463,13 +490,72 @@ pub struct HookBatchItem {
     pub body: serde_json::Value,
 }
 
-/// Response to `POST /hook/batch`: the length of the contiguous leading prefix
-/// of items that committed (equals the request length on full success).
+/// Response to `POST /hook/batch`: legacy clients read the contiguous leading
+/// prefix in `accepted`; newer clients prefer `accepted_indices` when present to
+/// retain only non-contiguous items skipped by per-source rate limiting.
 #[derive(Debug, Serialize)]
 pub struct HookBatchAck {
-    /// Items committed, oldest-first. The client deletes exactly this many
-    /// spool entries and re-sends the rest next pass.
+    /// Contiguous leading prefix committed, oldest-first. Kept for old spool
+    /// drains and as a safe lower bound when `accepted_indices` is absent.
     pub accepted: usize,
+    /// Non-contiguous item indexes committed by a server new enough to keep
+    /// scanning past per-source rate-limited items. Omitted when it is exactly
+    /// the legacy accepted prefix so older clients keep working.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_indices: Option<Vec<usize>>,
+    /// Item index that failed processing after earlier rate-limited skips. New
+    /// spool drains charge this item, not the first unaccepted one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_index: Option<usize>,
+}
+
+impl HookBatchAck {
+    fn prefix(accepted: usize) -> Self {
+        Self {
+            accepted,
+            accepted_indices: None,
+            failed_index: None,
+        }
+    }
+
+    fn indexed(indices: Vec<usize>) -> Self {
+        Self::indexed_with_empty(indices, false, None)
+    }
+
+    fn indexed_full_scan(indices: Vec<usize>) -> Self {
+        Self::indexed_with_empty(indices, true, None)
+    }
+
+    fn indexed_failed(indices: Vec<usize>, failed_index: usize) -> Self {
+        Self::indexed_with_empty(indices, true, Some(failed_index))
+    }
+
+    fn indexed_with_empty(
+        indices: Vec<usize>,
+        include_empty_indices: bool,
+        failed_index: Option<usize>,
+    ) -> Self {
+        let legacy_prefix = indices
+            .iter()
+            .copied()
+            .enumerate()
+            .take_while(|(pos, idx)| *pos == *idx)
+            .count();
+        let contiguous = indices
+            .iter()
+            .copied()
+            .enumerate()
+            .all(|(pos, idx)| pos == idx);
+        Self {
+            accepted: legacy_prefix,
+            accepted_indices: if contiguous && !(include_empty_indices && indices.is_empty()) {
+                None
+            } else {
+                Some(indices)
+            },
+            failed_index,
+        }
+    }
 }
 
 /// Batch sibling of [`handle_hook`]. Accepts many spooled events in ONE request
@@ -478,12 +564,12 @@ pub struct HookBatchAck {
 /// dominant cost when a backlog drains to a remote, gated server, and the reason
 /// a sequential per-event drain falls behind under parallel load.
 ///
-/// Unlike `handle_hook` (which spawns and answers `202` immediately), the batch
-/// is processed INLINE and FAIL-FAST: items run in order and the first error
-/// stops the batch, returning `accepted = <committed prefix>`. Inline + fail-fast
-/// keeps every item's side effects (a SessionEnd writes a session page + a
-/// handoff) inside the response window, so a partially-applied batch never
-/// commits beyond what `accepted` reports — the client deletes only that prefix.
+/// Unlike `handle_hook` (which spawns and answers `202` immediately), stored
+/// batch items are processed INLINE so every item's side effects (a SessionEnd
+/// writes a session page + a handoff) stay inside the response window. Real
+/// processing errors still fail-fast. Per-source rate-limit misses are different:
+/// the item is skipped and later unrelated sources continue, with
+/// `accepted_indices` telling new spool drains exactly which entries committed.
 async fn handle_hook_batch(
     State(state): State<Arc<HookState>>,
     actor_ext: Option<axum::Extension<ai_memory_core::ActorContext>>,
@@ -495,18 +581,15 @@ async fn handle_hook_batch(
             max = MAX_HOOK_BATCH_ITEMS,
             "hook batch too large; rejecting before processing"
         );
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(HookBatchAck { accepted: 0 }),
-        );
+        return (StatusCode::PAYLOAD_TOO_LARGE, Json(HookBatchAck::prefix(0)));
     }
     // All items in a batch share the drain's single identity, so the actor is
     // captured once from the batch request (mirrors `handle_hook`).
     let actor_user = actor_ext
         .map(|axum::Extension(ctx)| ctx.user)
         .unwrap_or_default();
-    let mut accepted = 0usize;
-    for item in items {
+    let mut accepted_indices = Vec::new();
+    for (idx, item) in items.into_iter().enumerate() {
         let query = parse_hook_query(&item.url);
         let env = HookEnvelope::from_query_and_body(query, item.body);
         let actor_key = ActorKey {
@@ -517,46 +600,44 @@ async fn handle_hook_batch(
         // as committed so the client clears it from its spool, but do not store
         // it. Keeps the contiguous-prefix ack contract intact.
         if should_drop_subagent(&state, &env, &actor_key).await {
-            accepted += 1;
+            accepted_indices.push(idx);
             continue;
         }
-        // Per-source rate limit (see `handle_hook`): when this source is over
-        // its burst, stop the batch at the committed prefix so the client
-        // retries the rest as tokens refill — smoothing a flood rather than
-        // OOMing on it (the 2026-06-29 flood came through /hook/batch).
-        let rate_key = env.session_id.clone().unwrap_or_default();
+        let Ok(permit) = state.ingest_semaphore.clone().try_acquire_owned() else {
+            warn!(
+                accepted = accepted_indices.len(),
+                "hook batch ingest saturated; rejecting with 429"
+            );
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(HookBatchAck::indexed(accepted_indices)),
+            );
+        };
+        let rate_key = ingest_rate_key(&env, actor_user.as_deref());
         if !state
             .ingest_rate
             .lock()
             .await
             .try_take(&rate_key, std::time::Instant::now())
         {
-            warn!(accepted, source = %rate_key, "hook batch source rate limited; stopping at committed prefix");
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(HookBatchAck { accepted }),
-            );
+            drop(permit);
+            warn!(accepted = accepted_indices.len(), source = %log_rate_key(&rate_key), "hook batch source rate limited; skipping item and continuing");
+            continue;
         }
-        // Mirror single `/hook`: subagent drops consume no ingest capacity, and
-        // only events we will actually process acquire a permit. The batch loop
-        // is sequential, so one permit held across this item preserves the
-        // server-wide in-flight bound without making all-droppable batches 429
-        // under saturation.
-        let Ok(permit) = state.ingest_semaphore.clone().try_acquire_owned() else {
-            warn!(accepted, "hook batch ingest saturated; rejecting with 429");
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(HookBatchAck { accepted }),
-            );
-        };
         let _permit = permit;
         if let Err(e) = process(&state, env, actor_user.clone()).await {
-            warn!(error = %e, accepted, "hook batch item failed; stopping (fail-fast)");
-            break;
+            warn!(error = %e, accepted = accepted_indices.len(), "hook batch item failed; stopping (fail-fast)");
+            return (
+                StatusCode::OK,
+                Json(HookBatchAck::indexed_failed(accepted_indices, idx)),
+            );
         }
-        accepted += 1;
+        accepted_indices.push(idx);
     }
-    (StatusCode::OK, Json(HookBatchAck { accepted }))
+    (
+        StatusCode::OK,
+        Json(HookBatchAck::indexed_full_scan(accepted_indices)),
+    )
 }
 
 /// Decide whether to accept-but-drop this event under `drop_subagent_captures`,
@@ -1950,6 +2031,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ingest_rate_limiter_bounds_key_bytes() {
+        let mut rl = IngestRateLimiter::new(1.0, 1.0);
+        let huge = "s".repeat(1024 * 1024);
+        assert!(rl.try_take(&huge, std::time::Instant::now()));
+        assert!(
+            rl.max_stored_key_len() <= INGEST_RATE_MAX_KEY_BYTES,
+            "stored limiter keys must be byte-bounded"
+        );
+    }
+
+    #[test]
+    fn ingest_rate_key_uses_actor_and_missing_session_fallback() {
+        let query = HookQuery {
+            event: "session-start".into(),
+            agent: Some("claude-code".into()),
+            ..Default::default()
+        };
+        let one = HookEnvelope::from_query_and_body(query.clone(), serde_json::json!({"cwd":"/a"}));
+        let two = HookEnvelope::from_query_and_body(query.clone(), serde_json::json!({"cwd":"/b"}));
+        assert_ne!(ingest_rate_key(&one, None), ingest_rate_key(&two, None));
+
+        let scoped_a = HookEnvelope::from_query_and_body(
+            HookQuery {
+                workspace: Some("team-a".into()),
+                project_strategy: Some("basename".into()),
+                ..query.clone()
+            },
+            serde_json::json!({"cwd":"/same"}),
+        );
+        let scoped_b = HookEnvelope::from_query_and_body(
+            HookQuery {
+                workspace: Some("team-b".into()),
+                project_strategy: Some("repo-root".into()),
+                ..query.clone()
+            },
+            serde_json::json!({"cwd":"/same"}),
+        );
+        assert_ne!(
+            ingest_rate_key(&scoped_a, None),
+            ingest_rate_key(&scoped_b, None)
+        );
+
+        let with_session =
+            HookEnvelope::from_query_and_body(query, serde_json::json!({"session_id":"same"}));
+        assert_ne!(
+            ingest_rate_key(&with_session, Some("alice")),
+            ingest_rate_key(&with_session, Some("bob")),
+            "different actors sharing a session id get separate limiter buckets"
+        );
+    }
+
     #[tokio::test]
     async fn handle_hook_rate_limits_a_flooding_source_but_not_others() {
         let tmp = TempDir::new().unwrap();
@@ -2008,6 +2141,37 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn handle_hook_does_not_debit_source_token_when_globally_saturated() {
+        let tmp = TempDir::new().unwrap();
+        let mut state = make_state(&tmp).await;
+        state.ingest_rate = Arc::new(tokio::sync::Mutex::new(IngestRateLimiter::new(0.001, 1.0)));
+        state.ingest_semaphore = Arc::new(tokio::sync::Semaphore::new(0));
+        let state = Arc::new(state);
+
+        let query = HookQuery {
+            event: "session-start".into(),
+            agent: Some("claude-code".into()),
+            ..Default::default()
+        };
+        let body = serde_json::json!({ "session_id": "global-first" });
+        let first = handle_hook(
+            State(state.clone()),
+            Query(query.clone()),
+            None,
+            Json(body.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(first.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        state.ingest_semaphore.add_permits(1);
+        let second = handle_hook(State(state), Query(query), None, Json(body))
+            .await
+            .into_response();
+        assert_eq!(second.status(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]
@@ -2386,6 +2550,73 @@ mod tests {
         .await
         .into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn handle_hook_batch_skips_rate_limited_first_item_and_accepts_later_source() {
+        let tmp = TempDir::new().unwrap();
+        let mut state = make_state(&tmp).await;
+        let mut limiter = IngestRateLimiter::new(0.001, 1.0);
+        assert!(limiter.try_take("u:\ns:flooder", std::time::Instant::now()));
+        state.ingest_rate = Arc::new(tokio::sync::Mutex::new(limiter));
+
+        let response = handle_hook_batch(
+            State(Arc::new(state)),
+            None,
+            Json(vec![
+                HookBatchItem {
+                    url: "http://h/hook?event=session-start&agent=claude-code".into(),
+                    body: serde_json::json!({ "session_id": "flooder" }),
+                },
+                HookBatchItem {
+                    url: "http://h/hook?event=session-start&agent=claude-code".into(),
+                    body: serde_json::json!({ "session_id": "other" }),
+                },
+            ]),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let ack: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(ack["accepted"], 0);
+        assert_eq!(ack["accepted_indices"], serde_json::json!([1]));
+    }
+
+    #[tokio::test]
+    async fn handle_hook_batch_reports_failed_index_after_rate_limited_skip() {
+        let tmp = TempDir::new().unwrap();
+        let mut state = make_state(&tmp).await;
+        let mut limiter = IngestRateLimiter::new(0.001, 1.0);
+        assert!(limiter.try_take("u:\ns:flooder", std::time::Instant::now()));
+        state.ingest_rate = Arc::new(tokio::sync::Mutex::new(limiter));
+
+        let response = handle_hook_batch(
+            State(Arc::new(state)),
+            None,
+            Json(vec![
+                HookBatchItem {
+                    url: "http://h/hook?event=session-start&agent=claude-code".into(),
+                    body: serde_json::json!({ "session_id": "flooder" }),
+                },
+                HookBatchItem {
+                    url: "http://h/hook?event=user-prompt-submit&agent=claude-code".into(),
+                    body: serde_json::json!({ "prompt": "missing session fails" }),
+                },
+            ]),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let ack: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(ack["accepted"], 0);
+        assert_eq!(ack["accepted_indices"], serde_json::json!([]));
+        assert_eq!(ack["failed_index"], 1);
     }
 
     #[tokio::test]

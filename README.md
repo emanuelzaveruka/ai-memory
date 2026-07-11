@@ -375,6 +375,11 @@ Bearer auth protects `/mcp`, `/hook`, `/handoff`, `/admin/*`, and
 as the password. Non-loopback binds should also set
 `AI_MEMORY_ALLOWED_HOSTS` to guard against DNS rebinding.
 
+Busy shared hook servers can also set `AI_MEMORY_HOOK_RATE_PER_SEC` (tokens per
+second per actor/session source) and optionally `AI_MEMORY_HOOK_RATE_BURST` to
+bound one runaway session without blocking unrelated hook sources. Unset or `0`
+rate leaves the limiter disabled.
+
 For shared servers where each developer should authenticate their own hook
 writes, native Claude Code hooks can use a stored OIDC device token instead of
 embedding a shared static token:

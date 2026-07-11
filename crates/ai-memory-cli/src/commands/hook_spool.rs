@@ -484,6 +484,20 @@ pub async fn drain(
                         break;
                     }
                 }
+                BatchOutcome::AcceptedIndices {
+                    indices,
+                    failed_index,
+                } => {
+                    let sent = delete_accepted_indices(&chunk, &indices);
+                    result.sent += sent;
+                    if let Some(failed_index) = failed_index.and_then(|i| chunk.get(i).map(|_| i)) {
+                        bump_or_drop(&chunk[failed_index].0, &chunk[failed_index].1, &mut result);
+                        result.remaining += chunk.len().saturating_sub(sent).saturating_sub(1)
+                            + files.len().saturating_sub(idx);
+                        break;
+                    }
+                    result.remaining += chunk.len().saturating_sub(sent);
+                }
                 BatchOutcome::Saturated(k) => {
                     // Server ingest filled after committing a leading prefix.
                     // Delete only that prefix; leave the saturated item and all
@@ -496,6 +510,13 @@ pub async fn drain(
                     result.sent += k;
                     result.remaining +=
                         chunk.len().saturating_sub(k) + files.len().saturating_sub(idx);
+                    break;
+                }
+                BatchOutcome::SaturatedIndices(indices) => {
+                    let sent = delete_accepted_indices(&chunk, &indices);
+                    result.sent += sent;
+                    result.remaining +=
+                        chunk.len().saturating_sub(sent) + files.len().saturating_sub(idx);
                     break;
                 }
                 BatchOutcome::Unsupported => {
@@ -573,6 +594,17 @@ pub async fn drain(
         }
     }
     result
+}
+
+fn delete_accepted_indices(chunk: &[(PathBuf, SpoolEntry)], indices: &[usize]) -> usize {
+    let mut sent = 0usize;
+    for idx in indices.iter().copied() {
+        if let Some((path, _)) = chunk.get(idx) {
+            let _ = std::fs::remove_file(path);
+            sent += 1;
+        }
+    }
+    sent
 }
 
 fn batch_request_timeout(
@@ -1175,6 +1207,111 @@ mod tests {
             vec![0, 0],
             "saturation must not bump retry attempts for the first unaccepted item"
         );
+    }
+
+    #[tokio::test]
+    async fn non_contiguous_batch_ack_deletes_only_accepted_indices() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = vec![0_u8; 65536];
+                    let _ = s.read(&mut buf).await;
+                    let body = r#"{"accepted":0,"accepted_indices":[1]}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let spool = spool_dir(tmp.path());
+        for i in 0..2 {
+            write_spool_entry(
+                &spool,
+                &format!("evt-{i}.json"),
+                format!("http://{addr}/hook?event=e{i}"),
+            );
+        }
+
+        let r = drain(
+            &spool,
+            tmp.path(),
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+        )
+        .await;
+
+        assert_eq!(r.sent, 1);
+        assert_eq!(r.dropped, 0);
+        assert_eq!(r.remaining, 1);
+        let mut files = list_entries(&spool).unwrap();
+        files.sort();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("evt-0.json"));
+        assert_eq!(sorted_attempts(&spool), vec![0]);
+    }
+
+    #[tokio::test]
+    async fn non_contiguous_batch_ack_charges_reported_failed_index() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = vec![0_u8; 65536];
+                    let _ = s.read(&mut buf).await;
+                    let body = r#"{"accepted":0,"accepted_indices":[],"failed_index":1}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = s.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+
+        let tmp = tempfile::tempdir().unwrap();
+        let spool = spool_dir(tmp.path());
+        for i in 0..3 {
+            write_spool_entry(
+                &spool,
+                &format!("evt-{i}.json"),
+                format!("http://{addr}/hook?event=e{i}"),
+            );
+        }
+
+        let r = drain(
+            &spool,
+            tmp.path(),
+            Duration::from_secs(5),
+            Duration::from_secs(2),
+        )
+        .await;
+
+        assert_eq!(r.sent, 0);
+        assert_eq!(r.dropped, 0);
+        assert_eq!(r.remaining, 3);
+        let mut files = list_entries(&spool).unwrap();
+        files.sort();
+        assert_eq!(files.len(), 3);
+        let attempts: Vec<u32> = files
+            .iter()
+            .map(|path| {
+                serde_json::from_slice::<SpoolEntry>(&std::fs::read(path).unwrap())
+                    .unwrap()
+                    .attempts
+            })
+            .collect();
+        assert_eq!(attempts, vec![0, 1, 0]);
     }
 
     /// A mock hook server: answers `200 {"accepted":N}` to `POST /hook/batch`

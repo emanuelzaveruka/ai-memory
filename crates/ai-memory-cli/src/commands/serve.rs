@@ -290,7 +290,14 @@ pub async fn run(config: &Config, args: ServeArgs) -> Result<()> {
                     ai_memory_hooks::SubagentSessionSet::default(),
                 )),
                 ingest_rate: std::sync::Arc::new(tokio::sync::Mutex::new(
-                    ai_memory_hooks::IngestRateLimiter::from_env(),
+                    ai_memory_hooks::IngestRateLimiter::new(
+                        config.hook_rate_per_sec.max(0.0),
+                        if config.hook_rate_burst > 0.0 {
+                            config.hook_rate_burst
+                        } else {
+                            config.hook_rate_per_sec.max(1.0)
+                        },
+                    ),
                 )),
                 home_dir: config.home_dir.clone(),
             });

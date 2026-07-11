@@ -17,6 +17,9 @@
 //!
 //! Privacy strip is a *typed* boundary: there is no way to write an
 //! observation without first passing through `Sanitized::new`.
+//!
+//! This crate does not read process environment directly; server configuration
+//! is resolved once by `ai-memory-cli` and threaded in as typed state.
 
 pub mod log;
 pub mod payload;

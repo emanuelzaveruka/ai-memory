@@ -133,6 +133,10 @@ pub struct Config {
     /// and `per_actor` are for shared installs. See [`AutoScopeSettings`]
     /// and [`ai_memory_core::ActiveProjectMode`].
     pub auto_scope: AutoScopeSettings,
+    /// Env-backed alias for hook ingest tokens per second per source.
+    pub hook_rate_per_sec: f64,
+    /// Env-backed alias for hook ingest burst tokens per source.
+    pub hook_rate_burst: f64,
     /// `Host`-header allowlist for the HTTP server. Requests whose
     /// `Host` header doesn't match this list are rejected before they
     /// reach MCP, hook, admin, or web routes (DNS-rebinding defence).
@@ -367,6 +371,8 @@ impl Default for Config {
             sanitize: ai_memory_core::SanitizeConfig::default(),
             auth: AuthSettings::default(),
             auto_scope: AutoScopeSettings::default(),
+            hook_rate_per_sec: 0.0,
+            hook_rate_burst: 0.0,
             allowed_hosts: vec!["localhost".into(), "127.0.0.1".into(), "::1".into()],
             cors_allow_origins: Vec::new(),
             admission_webhooks: Vec::new(),
@@ -1023,6 +1029,8 @@ mod tests {
             r#"
             bind = "0.0.0.0:9999"
             log_level = "debug"
+            hook_rate_per_sec = 7.5
+            hook_rate_burst = 12.0
 
             [maintenance]
             enabled = false
@@ -1073,6 +1081,8 @@ mod tests {
         let cfg = Config::load(Some(&cfg_path), Some(tmp.path().to_path_buf())).unwrap();
         assert_eq!(cfg.bind, "0.0.0.0:9999");
         assert_eq!(cfg.log_level, "debug");
+        assert_eq!(cfg.hook_rate_per_sec, 7.5);
+        assert_eq!(cfg.hook_rate_burst, 12.0);
         assert!(!cfg.maintenance.enabled);
         assert_eq!(cfg.maintenance.lint_interval_secs, 3600);
         assert!(cfg.auto_improve.scheduler.enabled);

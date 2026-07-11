@@ -392,6 +392,15 @@ Timing values must be positive whole minutes. Missing, empty, non-numeric, or
 zero values fall back to the built-in defaults; values above 60 are clamped. The
 incremental threshold is a positive event count; invalid values fall back to 32.
 
+Server-side hook ingest also has an optional per-source limiter for shared or
+remote installs that need protection from one runaway agent session. Set
+`AI_MEMORY_HOOK_RATE_PER_SEC` on the server to the token refill rate per
+actor/session source; `0` or unset disables the limiter. Set
+`AI_MEMORY_HOOK_RATE_BURST` to override the burst size (defaults to the refill
+rate, minimum one token when enabled). The limiter is bounded in both key count
+and key bytes, and `/hook/batch` drains can skip over-budget sources while still
+accepting later unrelated sources.
+
 ### Native service operations
 
 ```bash
@@ -757,6 +766,7 @@ The `serve` subcommand also accepts:
 | `--web-slug /web` | `AI_MEMORY_WEB_SLUG` | Where the web UI mounts within the base-path. Default `/web`; set to `/` to mount the UI at the base-path root. |
 | `--web-ui-dir <path>` | `AI_MEMORY_WEB_UI_DIR` | Serve a custom SPA from `<path>` instead of the built-in browser. ai-memory injects `<base href>` and `<meta name="ai-memory-base-path">` so the SPA can build relative URLs and API calls under the configured prefix. |
 | `--cors-allow-origin <origin>` | `AI_MEMORY_CORS_ALLOW_ORIGINS` (CSV) | Allow listed origins to call `/api/v1`. Layer is scoped only to that route — `/mcp`, `/hook`, `/admin`, and `/web` remain origin-locked. |
+| _(config only)_ | `AI_MEMORY_HOOK_RATE_PER_SEC`, `AI_MEMORY_HOOK_RATE_BURST` | Optional per-actor/session hook ingest token bucket. Unset/`0` rate disables it; burst defaults to the rate (minimum one token when enabled). |
 
 On macOS, see [`docs/macos.md`](macos.md); use the archive matching your
 architecture: `aarch64` for Apple Silicon, `x86_64` for Intel. On Windows, see

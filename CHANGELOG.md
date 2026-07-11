@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the unused LLM retry-exhaustion error variant was removed ([#171]).
 
 ### Fixed
+- `/hook/batch` now skips per-source rate-limited items and continues accepting
+  later unrelated sources, returns non-contiguous acknowledgements for new spool
+  drains, bounds limiter key bytes, keys by actor+session with deterministic
+  missing-session fallbacks, and avoids spending source tokens on globally
+  saturated events. `AI_MEMORY_HOOK_RATE_PER_SEC` and
+  `AI_MEMORY_HOOK_RATE_BURST` are now parsed through typed server config
+  instead of the hooks crate reading env directly ([#170]).
 - MCP tool calls over the stdio transport now fall back to an anonymous
   synthetic request context when HTTP request parts are absent, while preserving
   real streamable-HTTP auth/session parts when present ([#168]).

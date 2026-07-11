@@ -18,6 +18,13 @@ allowed_hosts = ["localhost", "127.0.0.1", "::1"]
 # Default tracing filter (overridable by RUST_LOG).
 log_level = "info"
 
+# Optional server-side hook ingest limiter for shared/remote installs. The rate
+# is tokens per second per actor/session source; 0 or unset disables it. Burst
+# defaults to the rate (minimum one token when enabled). Env equivalents:
+# `AI_MEMORY_HOOK_RATE_PER_SEC` and `AI_MEMORY_HOOK_RATE_BURST`.
+# hook_rate_per_sec = 0.0
+# hook_rate_burst = 0.0
+
 # M8 retention-sweep parameters.
 #
 # Formula:
