@@ -353,7 +353,13 @@ impl ActiveProject {
                 Instant::now(),
             );
         }
-        guard.insert(scoped, workspace_id, project_id, default_global, Instant::now());
+        guard.insert(
+            scoped,
+            workspace_id,
+            project_id,
+            default_global,
+            Instant::now(),
+        );
     }
 
     /// Read the currently active project for the given actor, if any has

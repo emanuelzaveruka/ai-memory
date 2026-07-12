@@ -940,9 +940,12 @@ async fn resolve_project_ids_inner(
         (None, Some(c)) => match derive_project_from_cwd(c, project_strategy) {
             Some(resolved) => resolved,
             None => {
-                state
-                    .active_project
-                    .set_for(actor, state.workspace_id, state.project_id, default_global);
+                state.active_project.set_for(
+                    actor,
+                    state.workspace_id,
+                    state.project_id,
+                    default_global,
+                );
                 return Ok((state.workspace_id, state.project_id));
             }
         },
@@ -953,9 +956,12 @@ async fn resolve_project_ids_inner(
             // gets refactored. Same effect as `unreachable!`, but
             // visible at compile time instead of inside the panic
             // message.
-            state
-                .active_project
-                .set_for(actor, state.workspace_id, state.project_id, default_global);
+            state.active_project.set_for(
+                actor,
+                state.workspace_id,
+                state.project_id,
+                default_global,
+            );
             return Ok((state.workspace_id, state.project_id));
         }
     };

@@ -4720,7 +4720,12 @@ mod tests {
             .unwrap();
         for (w, p, path, body) in [
             (ws, infra, "cluster.md", "recall_token lives in infra"),
-            (ops_ws, runbooks, "deploy.md", "recall_token lives in runbooks"),
+            (
+                ops_ws,
+                runbooks,
+                "deploy.md",
+                "recall_token lives in runbooks",
+            ),
         ] {
             store
                 .writer
