@@ -103,6 +103,8 @@ impl Consolidator {
         &self,
         session_id: SessionId,
         dry_run: bool,
+        actor: ai_memory_core::ActorContext,
+        author_id: Option<ai_memory_core::UserId>,
     ) -> ConsolidatorResult<ConsolidationOutcome> {
         let observations = self.reader.observations_for_session(session_id).await?;
         if observations.is_empty() {
@@ -160,10 +162,11 @@ impl Consolidator {
                 title: None,
                 admission_ctx: Some(AdmissionContext {
                     op: AdmissionOp::Consolidate,
+                    actor: actor.clone(),
                     ..Default::default()
                 }),
-                author_id: None,
-                actor: ai_memory_core::ActorContext::anonymous(),
+                author_id,
+                actor,
             })
             .await?;
         // Auto-commit the result so the supersession lands in git.
@@ -268,6 +271,8 @@ impl Consolidator {
         &self,
         session_id: SessionId,
         dry_run: bool,
+        actor: ai_memory_core::ActorContext,
+        author_id: Option<ai_memory_core::UserId>,
     ) -> ConsolidatorResult<Vec<ConsolidationOutcome>> {
         let observations = self.reader.observations_for_session(session_id).await?;
         if observations.is_empty() {
@@ -293,7 +298,7 @@ impl Consolidator {
         let mut requests = Vec::with_capacity(batch.updates.len());
         let mut outcomes_preview = Vec::with_capacity(batch.updates.len());
         for upd in &batch.updates {
-            let (req, outcome) = build_update(ws, proj, upd, dry_run)?;
+            let (req, outcome) = build_update(ws, proj, upd, dry_run, &actor, author_id)?;
             if self.should_skip_high_resistance_slot_update(ws, proj, &req)? {
                 debug!(
                     path = %req.path.as_str(),
@@ -346,6 +351,8 @@ fn build_update(
     proj: ProjectId,
     upd: &crate::types::ConsolidatedPageUpdate,
     dry_run: bool,
+    actor: &ai_memory_core::ActorContext,
+    author_id: Option<ai_memory_core::UserId>,
 ) -> ConsolidatorResult<(WritePageRequest, ConsolidationOutcome)> {
     let final_path = if upd.kind == crate::types::PageKind::Rule {
         let slug = slugify_for_rule(&upd.title);
@@ -399,10 +406,11 @@ fn build_update(
         title: Some(upd.title.clone()),
         admission_ctx: Some(AdmissionContext {
             op: AdmissionOp::Consolidate,
+            actor: actor.clone(),
             ..Default::default()
         }),
-        author_id: None,
-        actor: ai_memory_core::ActorContext::anonymous(),
+        author_id,
+        actor: actor.clone(),
     };
     let outcome = ConsolidationOutcome {
         path,
@@ -891,8 +899,52 @@ mod tests {
             tags: Vec::new(),
             slot_kind: SlotKind::State,
         };
-        let (req, _) = build_update(WorkspaceId::new(), ProjectId::new(), &update, true).unwrap();
+        let (req, _) = build_update(
+            WorkspaceId::new(),
+            ProjectId::new(),
+            &update,
+            true,
+            &ai_memory_core::ActorContext::anonymous(),
+            None,
+        )
+        .unwrap();
         assert_eq!(req.frontmatter["slot_kind"], "state");
+    }
+
+    #[test]
+    fn build_update_stamps_request_actor_and_author() {
+        let update = crate::types::ConsolidatedPageUpdate {
+            path: "notes/x.md".into(),
+            tier: Tier::Episodic,
+            kind: crate::types::PageKind::Fact,
+            title: "X".into(),
+            body_markdown: "body".into(),
+            tags: Vec::new(),
+            slot_kind: SlotKind::State,
+        };
+        let actor = ai_memory_core::ActorContext {
+            user: Some("djalmajr".into()),
+            ..Default::default()
+        };
+        let author = ai_memory_core::UserId::new();
+        let (req, _) = build_update(
+            WorkspaceId::new(),
+            ProjectId::new(),
+            &update,
+            false,
+            &actor,
+            Some(author),
+        )
+        .unwrap();
+        // The write is attributed to the real operator (not the old anonymous).
+        assert_eq!(req.actor.user.as_deref(), Some("djalmajr"));
+        assert_eq!(req.author_id, Some(author));
+        // The admission ctx carries the actor too, so an actor-gated webhook
+        // authorizes by user instead of rejecting an empty actor.
+        assert_eq!(
+            req.admission_ctx.expect("ctx").actor.user.as_deref(),
+            Some("djalmajr")
+        );
     }
 
     #[test]
@@ -906,7 +958,15 @@ mod tests {
             tags: Vec::new(),
             slot_kind: SlotKind::Invariant,
         };
-        let (req, _) = build_update(WorkspaceId::new(), ProjectId::new(), &update, true).unwrap();
+        let (req, _) = build_update(
+            WorkspaceId::new(),
+            ProjectId::new(),
+            &update,
+            true,
+            &ai_memory_core::ActorContext::anonymous(),
+            None,
+        )
+        .unwrap();
         assert_eq!(req.frontmatter["slot_kind"], "invariant");
     }
 

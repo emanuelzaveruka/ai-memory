@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `memory_consolidate` now attributes its consolidated page to the request's
+  authenticated identity (same derivation as `memory_write_page`) instead of
+  a hard-coded anonymous actor — so `last_modified_by` is populated and an
+  actor-gated admission webhook authorizes the write by user rather than
+  rejecting the empty actor. The automatic session-end / compaction
+  consolidation in the hook router is system-initiated and deliberately
+  stays anonymous ([#183]).
+
 ### Changed
 - `audit-contamination` no longer flags an observation whose project differs
   from its session's home project (the old `observation_session_drift` CHECK

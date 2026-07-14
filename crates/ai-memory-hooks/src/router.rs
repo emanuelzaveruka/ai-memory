@@ -1608,7 +1608,15 @@ async fn process(
         if state.consolidate_on_session_end
             && let Some(c) = state.consolidator.as_ref()
         {
-            match c.consolidate_session(session_id, false).await {
+            match c
+                .consolidate_session(
+                    session_id,
+                    false,
+                    ai_memory_core::ActorContext::anonymous(),
+                    None,
+                )
+                .await
+            {
                 Ok(outcome) => info!(
                     session = %session_id,
                     path = %outcome.path,
@@ -1756,7 +1764,14 @@ async fn consolidate_or_synth(
     checkpoint_label: &str,
 ) -> anyhow::Result<()> {
     if let Some(c) = state.consolidator.as_ref() {
-        let outcome = c.consolidate_session(session_id, false).await?;
+        let outcome = c
+            .consolidate_session(
+                session_id,
+                false,
+                ai_memory_core::ActorContext::anonymous(),
+                None,
+            )
+            .await?;
         debug!(
             session = %session_id,
             path = %outcome.path,

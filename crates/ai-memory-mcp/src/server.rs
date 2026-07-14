@@ -1452,6 +1452,7 @@ impl AiMemoryServer {
     async fn memory_consolidate(
         &self,
         Parameters(args): Parameters<ConsolidateArgs>,
+        OptionalParts(parts): OptionalParts,
     ) -> Result<CallToolResult, McpError> {
         let Some(consolidator) = self.consolidator.as_ref() else {
             return Err(McpError::internal_error(
@@ -1462,15 +1463,21 @@ impl AiMemoryServer {
         let session_id = SessionId::from_str(&args.session_id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let dry = args.dry_run.unwrap_or(false);
+        // Carry the request's authenticated identity into the write so the
+        // consolidated page is attributed to the real operator and any
+        // admission webhook authorizes by that actor (rather than the previous
+        // hard-coded anonymous, which an actor-gated webhook rejects).
+        let actor = crate::actor::actor_from_parts(&parts);
+        let author_id = crate::actor::author_id_from_parts(&parts);
         if args.multi_page.unwrap_or(false) {
             let outcomes = consolidator
-                .consolidate_session_multi(session_id, dry)
+                .consolidate_session_multi(session_id, dry, actor, author_id)
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
             ok_json(&serde_json::json!({ "outcomes": outcomes }))
         } else {
             let outcome = consolidator
-                .consolidate_session(session_id, dry)
+                .consolidate_session(session_id, dry, actor, author_id)
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
             ok_json(&outcome)
@@ -6188,11 +6195,14 @@ mod tests {
     async fn memory_consolidate_without_provider_errors_cleanly() {
         let (_tmp, _store, server, _ws, _pj) = setup_server().await;
         let err = server
-            .memory_consolidate(Parameters(ConsolidateArgs {
-                session_id: "00000000-0000-0000-0000-000000000000".into(),
-                dry_run: Some(true),
-                multi_page: Some(false),
-            }))
+            .memory_consolidate(
+                Parameters(ConsolidateArgs {
+                    session_id: "00000000-0000-0000-0000-000000000000".into(),
+                    dry_run: Some(true),
+                    multi_page: Some(false),
+                }),
+                OptionalParts(test_parts_default()),
+            )
             .await
             .expect_err("must reject when no consolidator is configured");
         let msg = format!("{err:?}");
